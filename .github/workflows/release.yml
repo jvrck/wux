@@ -202,14 +202,13 @@ jobs:
 
           printf 'asset_dir=%s\n' "$asset_dir" >> "$GITHUB_OUTPUT"
 
-      - name: Start a tmux server for the lifecycle smoke
-        shell: bash
-        # The smoke runs the binary's `wux run`, whose createSession elevates the
-        # global tmux history-limit before new-session and so needs a server
-        # already running. A clean runner has none; start a keepalive. CI setup
-        # only — no change to the released binary.
-        run: tmux new-session -d -s wux-ci-keepalive
       - name: Run lifecycle smoke
+        # No tmux server is pre-started: a clean runner is genuinely serverless,
+        # so the smoke's `wux run` exercises the first-run path the 2026.06.21.1
+        # fix repairs — createSession tolerates the pre-server history-limit
+        # elevation failing and lets `new-session -f <conf>` start the server.
+        # Pre-starting a keepalive here would mask that path; without it the smoke
+        # is real regression coverage for the serverless first run.
         shell: bash
         run: |
           set -euo pipefail
@@ -304,9 +303,10 @@ jobs:
             ${{ matrix.image }} \
             sh -euxc '
               apk add --no-cache bash coreutils libstdc++ tmux
-              # createSession needs a running tmux server for its history-limit
-              # elevation; a fresh container has none. Start a keepalive.
-              tmux new-session -d -s wux-ci-keepalive
+              # No tmux server is pre-started: the fresh container is genuinely
+              # serverless, so the smoke exercises the first-run path the
+              # 2026.06.21.1 fix repairs (createSession lets `new-session -f <conf>`
+              # start the server). A keepalive here would mask that path.
               test -s "$RELEASE_ASSET"
               cp "$RELEASE_ASSET" /tmp/wux
               chmod 0755 /tmp/wux
