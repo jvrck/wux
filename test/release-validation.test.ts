@@ -185,21 +185,30 @@ describe("release validation assets", () => {
 
     expect(workflow).toContain("  validate-native:");
     expect(workflow).toContain("  validate-linux-musl:");
-    expect(workflow).toContain("needs: build");
+    // Validation gating: validators depend on the draft + the build matrix, and
+    // the publish job depends on both validators.
+    expect(workflow).toContain("needs: [create-release, build]");
     expect(workflow).toContain("needs: [validate-native, validate-linux-musl]");
-    expect(workflow).toContain("actions/download-artifact@v8.0.1");
-    expect(workflow).toContain("name: ${{ matrix.asset }}");
+    // CalVer guard fails the release before anything builds on a non-CalVer tag.
+    expect(workflow).toContain("release tag must be CalVer YYYY.MM.DD");
+    // Binaries move between jobs as assets on the draft release, not via
+    // actions/{upload,download}-artifact: build uploads, validate/publish download.
+    expect(workflow).not.toContain("uses: actions/upload-artifact");
+    expect(workflow).not.toContain("uses: actions/download-artifact");
+    expect(workflow).toContain('gh release upload "$TAG" "dist/${{ matrix.asset }}" --clobber');
+    expect(workflow).toContain("gh release download");
     expect(workflow).toContain("scripts/smoke-release-asset.sh");
     expect(workflow).toContain("ubuntu-24.04-arm");
     expect(workflow).toContain("macos-15");
     expect(workflow).toContain("alpine");
     expect(workflow).toContain("libstdc++");
-    expect(workflow).toContain("actions/upload-artifact@v7.0.1");
-    expect(workflow).toContain("failure()");
-    expect(workflow).not.toContain("gh release download");
+    // Smoke diagnostics are dumped to the job summary on failure (no quota-bound
+    // diagnostics artifact).
+    expect(workflow).toContain("if: failure()");
+    // Validators (and their smoke) run on the draft before it is flipped public.
     expectBefore(workflow, "  validate-native:", "  release:");
     expectBefore(workflow, "  validate-linux-musl:", "  release:");
-    expectBefore(workflow, "scripts/smoke-release-asset.sh", "gh release create");
+    expectBefore(workflow, "scripts/smoke-release-asset.sh", "--draft=false");
   });
 
   test("release workflow publishes a CycloneDX SBOM after scanning it", async () => {
@@ -212,12 +221,19 @@ describe("release validation assets", () => {
     expect(workflow).toContain("--severity HIGH,CRITICAL");
     expect(workflow).toContain("--ignore-unfixed");
     expect(workflow).toContain("--exit-code 1");
-    expect(workflow).toContain("sha256sum wux-* sbom.cdx.json > SHA256SUMS");
+    // SHA256SUMS is built from the enumerated asset set (not a wux-* glob) plus
+    // the SBOM, so a reused/polluted draft cannot inject stray assets.
+    expect(workflow).toContain('sha256sum "${assets[@]}" sbom.cdx.json > SHA256SUMS');
     expect(workflow).toContain("scripts/extract-changelog-section.sh \"$TAG\" CHANGELOG.md > \"$RUNNER_TEMP/release-notes.md\"");
-    expect(workflow).toContain("gh release create \"$TAG\" --repo \"$GITHUB_REPOSITORY\" --notes-file \"$RUNNER_TEMP/release-notes.md\" wux-* sbom.cdx.json SHA256SUMS");
+    // Notes always come from the CHANGELOG section: the draft is created with
+    // those curated notes, the SBOM + checksums are attached, and only then is
+    // the draft flipped public. Never GitHub's auto-generated notes.
+    expect(workflow).toContain("gh release create \"$TAG\" --draft --notes-file \"$RUNNER_TEMP/release-notes.md\"");
+    expect(workflow).toContain("gh release upload \"$TAG\" sbom.cdx.json SHA256SUMS --clobber");
+    expect(workflow).toContain("gh release edit \"$TAG\" --draft=false --latest");
     expect(workflow).not.toContain("--generate-notes");
-    expectBefore(workflow, "scripts/extract-changelog-section.sh", "gh release create");
-    expectBefore(workflow, "trivy sbom sbom.cdx.json", "gh release create");
+    expectBefore(workflow, "scripts/extract-changelog-section.sh", "gh release create \"$TAG\" --draft");
+    expectBefore(workflow, "trivy sbom sbom.cdx.json", "--draft=false");
     expect(docs).toContain("sbom.cdx.json");
     expect(docs).toContain("CycloneDX");
     expect(docs).toContain("CHANGELOG.md");

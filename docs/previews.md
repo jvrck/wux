@@ -11,9 +11,13 @@ handoffs where the exact source SHA matters.
 
 There are two supported preview paths:
 
-1. Source checkout preview: run `wux` from a checked-out branch with Bun.
-2. GitHub Actions artifact preview: download compiled binaries built by
-   `.github/workflows/preview.yml`.
+1. Source checkout preview: run `wux` from a checked-out branch with Bun. This is
+   the path that produces a runnable preview binary on a host.
+2. GitHub Actions cross-compile gate: `.github/workflows/preview.yml` cross-builds
+   the release target set from the requested ref and records a build manifest
+   (versions and checksums) in the workflow run summary. It proves the ref
+   compiles for every release target and records its fingerprints; it does not
+   upload downloadable binaries.
 
 The preview workflow complements `.github/workflows/e2e.yml`; it does not
 recreate the E2E lifecycle and remote SSH smoke jobs. PRs should still rely on
@@ -22,8 +26,8 @@ the E2E workflow for tmux lifecycle and `--host` forwarding coverage. See
 
 ## Source Checkout Preview
 
-Use a source checkout when the target host has Bun and you want the fastest
-iteration loop.
+Use a source checkout when the target host has Bun and you want a runnable
+preview binary with the fastest iteration loop.
 
 ```bash
 git fetch origin <branch-or-pr-ref>
@@ -56,34 +60,39 @@ directory:
 XDG_STATE_HOME="$(mktemp -d)" bun run wux -- status
 ```
 
-## GitHub Actions Artifact Preview
+To produce a standalone preview binary from a checkout, cross-compile it the
+same way the release and preview workflows do:
 
-`.github/workflows/preview.yml` builds preview artifacts from the requested ref.
-It runs `bun run typecheck`, `bun test`, cross-compiles the same binary asset set
-used by releases, writes `BUILD_INFO.json`, writes `SHA256SUMS`, and uploads one
-artifact bundle.
-
-Preview artifact bundles are named:
-
-```text
-wux-preview-<safe-ref>-<short-sha>
+```bash
+SHORT_SHA="$(git rev-parse --short=12 HEAD)"
+bun build src/index.ts --compile --target=bun-linux-x64 \
+  --define "process.env.WUX_VERSION=\"0.0.0-preview.$SHORT_SHA\"" \
+  --outfile dist/wux-linux-x64
+./dist/wux-linux-x64 --version
 ```
 
-Inside the bundle, binary names intentionally match release asset names so the
-same smoke scripts and platform selection rules can be used:
+## GitHub Actions Cross-Compile Gate
+
+`.github/workflows/preview.yml` builds preview binaries from the requested ref.
+It cross-compiles the same binary asset set used by releases, stamps each binary
+with the preview version, writes `BUILD_INFO.json` and `SHA256SUMS`, and records
+that manifest in the workflow **run summary**.
+
+Preview binaries are **not** uploaded as Actions artifacts. Per-PR preview
+artifacts previously dominated account-wide Actions storage (#148) and tripped
+the artifact quota, which wedged the workflow. The cross-compile gate instead
+proves the ref builds for every release target and publishes its fingerprints in
+the run summary. To get a runnable binary, use a source checkout (above) or the
+published GitHub Release assets.
+
+The release asset set the gate cross-compiles, with the preview version stamp:
 
 ```text
 wux-linux-x64
 wux-linux-arm64
 wux-darwin-arm64
 wux-linux-x64-musl
-BUILD_INFO.json
-SHA256SUMS
 ```
-
-`BUILD_INFO.json` records the requested ref, checked-out SHA, preview version,
-artifact name, repository, workflow run, and asset list. Preview binaries are
-stamped as:
 
 ```text
 0.0.0-preview.<short-sha>
@@ -91,6 +100,11 @@ stamped as:
 
 Because that version is not CalVer, `wux upgrade` treats preview binaries as
 non-release builds and refuses to replace them through the stable upgrade path.
+
+`BUILD_INFO.json` records the requested ref, checked-out SHA, preview version,
+artifact name, repository, workflow run, and asset list. The run summary embeds
+`BUILD_INFO.json` and `SHA256SUMS` so the exact source identity and per-target
+checksums are auditable from the run page.
 
 ### Trigger A Preview Build
 
@@ -101,36 +115,28 @@ preview for an arbitrary branch, tag, or SHA:
 gh workflow run preview.yml -R jvrck/wux --ref main -f ref=<branch-or-sha>
 ```
 
-Find the run and download its artifacts:
+Find the run and read its summary, which carries `BUILD_INFO.json` and the
+per-target `SHA256SUMS`:
 
 ```bash
 RUN_ID="$(gh run list -R jvrck/wux --workflow preview.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
-mkdir -p /tmp/wux-preview
-gh run download "$RUN_ID" -R jvrck/wux -D /tmp/wux-preview
+gh run view "$RUN_ID" -R jvrck/wux
+echo "Summary: $(gh run view "$RUN_ID" -R jvrck/wux --json url --jq '.url')"
 ```
 
-Verify the bundle:
+The `preview_version` field in the summarized `BUILD_INFO.json` is the identity to
+report; match it against the `wux --version` of any binary you build for the same
+SHA.
 
-```bash
-PREVIEW_DIR="$(dirname "$(find /tmp/wux-preview -name BUILD_INFO.json -print -quit)")"
-cd "$PREVIEW_DIR"
-cat BUILD_INFO.json
-sha256sum -c SHA256SUMS || shasum -a 256 -c SHA256SUMS
-chmod +x wux-linux-x64
-./wux-linux-x64 --version
-```
+### Smoke A Preview Build Locally
 
-The printed version should match the `preview_version` field in
-`BUILD_INFO.json`.
-
-### Smoke A Preview Artifact Locally
-
-Use the existing release smoke script from a repo checkout against a downloaded
-preview binary:
+The gate does not produce a downloadable binary, so smoke a binary you built
+from the same source (source checkout above) or a published release asset. Use
+the existing release smoke script from a repo checkout:
 
 ```bash
 cd /path/to/wux
-PREVIEW_BIN="$PREVIEW_DIR/wux-linux-x64"
+PREVIEW_BIN="$PWD/dist/wux-linux-x64"
 WUX_BIN="$PREVIEW_BIN" \
   EXPECTED_VERSION="$("$PREVIEW_BIN" --version)" \
   WUX_SMOKE_ROOT="$(mktemp -d)" \
@@ -143,7 +149,7 @@ matches the Docker target architecture:
 
 ```bash
 cd /path/to/wux
-WUX_BIN="$PREVIEW_DIR/wux-linux-x64" \
+WUX_BIN="$PWD/dist/wux-linux-x64" \
   WUX_REMOTE_SMOKE_ROOT="$(mktemp -d)" \
   scripts/smoke-remote-ssh.sh
 ```
@@ -161,12 +167,13 @@ can instead point at a custom `--wux-path`.
 Use a dedicated preview user, preview host, or sandbox path. Do not replace a
 production user's stable `$HOME/.local/bin/wux` or `/usr/local/bin/wux`.
 
-For an artifact preview on a Linux x64 glibc host:
+For a binary preview on a Linux x64 glibc host, build it from a checkout (see
+[Source Checkout Preview](#source-checkout-preview)) and copy it to the host:
 
 ```bash
-SHORT_SHA="$(./wux-linux-x64 --version | sed 's/^0.0.0-preview.//')"
+SHORT_SHA="$(./dist/wux-linux-x64 --version | sed 's/^0.0.0-preview.//')"
 ssh preview-host "mkdir -p ~/.local/share/wux/previews/$SHORT_SHA ~/.local/bin"
-scp wux-linux-x64 "preview-host:~/.local/share/wux/previews/$SHORT_SHA/wux"
+scp dist/wux-linux-x64 "preview-host:~/.local/share/wux/previews/$SHORT_SHA/wux"
 ssh preview-host "chmod 0755 ~/.local/share/wux/previews/$SHORT_SHA/wux"
 ssh preview-host "ln -sfn ~/.local/share/wux/previews/$SHORT_SHA/wux ~/.local/bin/wux"
 ssh preview-host "command -v wux && wux --version"
@@ -215,7 +222,7 @@ wux status
 wux stop <run-name> --yes
 ```
 
-For artifact previews, remove the preview symlink and SHA-scoped directory from
+For binary previews, remove the preview symlink and SHA-scoped directory from
 the preview user:
 
 ```bash
@@ -238,16 +245,17 @@ collecting any diagnostics that need to be reported.
 When an agent tests a preview, report the exact preview identity and validation
 surface:
 
-- Preview path: source checkout or GitHub Actions artifact.
-- Ref and SHA: `git rev-parse HEAD` for source, or `BUILD_INFO.json` fields for
-  artifacts.
+- Preview path: source checkout or GitHub Actions cross-compile gate.
+- Ref and SHA: `git rev-parse HEAD` for source, or the `BUILD_INFO.json` fields
+  in the workflow run summary for the gate.
 - Binary version: `wux --version`.
 - Checks run: `bun run typecheck`, `bun test`, preview workflow run ID, E2E
   workflow run ID, local smoke, or remote smoke.
 - Remote target: host alias, platform asset used, and whether a dedicated
   preview user/path was used; include whether `--remote` or raw `--host` drove
   the smoke.
-- Integrity result: `SHA256SUMS` verification for artifact previews.
+- Integrity result: `SHA256SUMS` verification against the run-summary manifest
+  for binaries built from the same SHA.
 - Rollback: preview runs stopped and preview binary/checkouts removed, or the
   reason they were intentionally left in place.
 
