@@ -254,8 +254,11 @@ surface:
 - Remote target: host alias, platform asset used, and whether a dedicated
   preview user/path was used; include whether `--remote` or raw `--host` drove
   the smoke.
-- Integrity result: `SHA256SUMS` verification against the run-summary manifest
-  for binaries built from the same SHA.
+- Integrity result: for a downloadable binary (source-built or a release
+  asset), `SHA256SUMS` verification; for the cross-compile gate, the per-target
+  `SHA256SUMS` fingerprints recorded in the run summary. The gate's binaries are
+  not downloadable, and a local rebuild of the same SHA is not guaranteed
+  byte-identical, so do not claim a local binary matches the gate's checksums.
 - Rollback: preview runs stopped and preview binary/checkouts removed, or the
   reason they were intentionally left in place.
 
