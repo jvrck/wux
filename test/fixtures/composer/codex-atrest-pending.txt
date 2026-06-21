@@ -1,0 +1,53 @@
+> You are in /tmp/fixcap
+
+  Do you trust the contents of this directory? Working with untrusted contents
+  comes with higher risk of prompt injection. Trusting the directory allows
+  project-local config, hooks, and exec policies to load.
+
+› 1. Yes, continue
+  2. No, quit
+
+  Press enter to continue
+
+╭─────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.139.0)              │
+│                                         │
+│ model:       loading   /model to change │
+│ directory:   /tmp/fixcap                │
+│ permissions: YOLO mode                  │
+╰─────────────────────────────────────────╯
+
+
+› Run /review on my current changes
+
+  gpt-5.5 default · /tmp/fixcap
+
+
+› Run /review on my current changes
+
+  gpt-5.5 default · /tmp/fixcap
+
+╭─────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.139.0)              │
+│                                         │
+│ model:       gpt-5.5   /model to change │
+│ directory:   /tmp/fixcap                │
+│ permissions: YOLO mode                  │
+╰─────────────────────────────────────────╯
+
+  Tip: Use /compact when the conversation gets long to summarize history and
+  free up context.
+
+
+› summarize the readme please
+
+  gpt-5.5 default · /tmp/fixcap
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,29 @@
+╭─── Claude Code v2.1.177 ─────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting        │
+│                  Welcome back you!                 │ started                 │
+│                                                    │ Run /init to create a … │
+│                       ▐▛███▜▌                      │ ─────────────────────── │
+│                      ▝▜█████▛▘                     │ What's new              │
+│                        ▘▘ ▝▝                       │ Session titles are now… │
+│   Opus 4.8 (1M context) with xh… · Claude Pro ·    │ Added `footerLinksRege… │
+│   user@host.com's Organization                     │ Improved Bedrock crede… │
+│                    /tmp/fixcap                     │ /release-notes for more │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+❯ Run exactly this in bash and wait for it, then reply DONE: sleep 35; echo
+  slept
+
+● Bash(sleep 35; echo slept)
+  ⎿  Error: Blocked: sleep 35 followed by: echo slept. To wait for a condition,
+     use Monitor with an until-loop (e.g. `until <check>; do sleep 2; done`). To
+     wait for a command you started, use run_in_background: true. Do not chain
+     shorter sleeps to work around this block.
+
+✢ Boondoggling… (3s · ↑ 133 tokens)
+
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt
+

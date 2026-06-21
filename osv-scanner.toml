@@ -1,0 +1,43 @@
+# OSV-Scanner suppression file.
+#
+# Every suppression must be reviewed before it is added. Keep owner, tracking
+# issue or note, reason, and expiry visible in the versioned file.
+#
+# Template:
+# [[IgnoredVulns]]
+# id = "GHSA-xxxx-xxxx-xxxx"
+# ignoreUntil = 2026-09-01
+# reason = "owner: @maintainer; tracking issue: #123; reason: false positive or accepted temporary risk"
+
+# hono HTTP-surface advisories. hono is a transitive dependency of
+# @modelcontextprotocol/sdk's HTTP/SSE transport. wux is a CLI that uses the
+# stdio MCP transport only — no HTTP server, no listening port, no CORS
+# middleware, no AWS Lambda / Lambda@Edge adapter, and no static-file serving.
+# Every affected surface below is therefore never imported or executed, and is
+# tree-shaken out of the `bun build --compile` binary. Unreachable in wux.
+# owner: @jvrck; tracking: OSS launch readiness (#44).
+# Re-review by 2026-09-21 or when @modelcontextprotocol/sdk resolves hono>=4.12.25.
+[[IgnoredVulns]]
+id = "GHSA-88fw-hqm2-52qc"  # CVE-2026-54290: CORS middleware reflects any Origin with credentials
+ignoreUntil = 2026-09-21
+reason = "owner: @jvrck; tracking: #44; hono CORS middleware unused — wux is stdio-only MCP (transitive via @modelcontextprotocol/sdk HTTP transport; tree-shaken out)."
+
+[[IgnoredVulns]]
+id = "GHSA-j6c9-x7qj-28xf"  # CVE-2026-54287: AWS Lambda adapter merges Set-Cookie headers
+ignoreUntil = 2026-09-21
+reason = "owner: @jvrck; tracking: #44; hono AWS Lambda adapter unused — wux is a stdio-only CLI, runs no Lambda adapter (transitive via @modelcontextprotocol/sdk HTTP transport; tree-shaken out)."
+
+[[IgnoredVulns]]
+id = "GHSA-rv63-4mwf-qqc2"  # CVE-2026-54288: Body Limit middleware bypass on AWS Lambda
+ignoreUntil = 2026-09-21
+reason = "owner: @jvrck; tracking: #44; hono Body-Limit middleware / Lambda runtime unused — wux is a stdio-only CLI (transitive via @modelcontextprotocol/sdk HTTP transport; tree-shaken out)."
+
+[[IgnoredVulns]]
+id = "GHSA-wgpf-jwqj-8h8p"  # CVE-2026-54289: Lambda@Edge adapter drops repeated request headers
+ignoreUntil = 2026-09-21
+reason = "owner: @jvrck; tracking: #44; hono Lambda@Edge adapter unused — wux is a stdio-only CLI (transitive via @modelcontextprotocol/sdk HTTP transport; tree-shaken out)."
+
+[[IgnoredVulns]]
+id = "GHSA-wwfh-h76j-fc44"  # CVE-2026-54286: serve-static path traversal on Windows via %5C
+ignoreUntil = 2026-09-21
+reason = "owner: @jvrck; tracking: #44; hono serve-static unused — wux serves no static files (transitive via @modelcontextprotocol/sdk HTTP transport; tree-shaken out)."

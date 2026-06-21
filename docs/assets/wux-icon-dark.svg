@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="10 4 190 190" fill="none">
+  <!-- wux icon — DARK-bg variant (light ink), head-only -->
+  <!-- colors: ink #ECECEC, phosphor green #3DDC84 -->
+
+  <g stroke="#ECECEC" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="45" y="48" width="120" height="120" rx="16"/>
+    <line x1="45" y1="112" x2="165" y2="112"/>
+    <line x1="105" y1="112" x2="105" y2="168"/>
+  </g>
+
+  <g stroke="#ECECEC" stroke-width="7" stroke-linecap="round">
+    <line x1="88" y1="50" x2="78" y2="24"/>
+    <line x1="122" y1="50" x2="132" y2="24"/>
+  </g>
+
+  <g fill="#ECECEC">
+    <rect x="71" y="15" width="14" height="14" rx="4"/>
+    <rect x="125" y="15" width="14" height="14" rx="4"/>
+    <path d="M45 78 H31 L23 88 L31 98 H45 Z"/>
+    <path d="M165 78 H179 L187 88 L179 98 H165 Z"/>
+    <path d="M74 168 H92 L88 184 H70 Z"/>
+    <path d="M118 168 H136 L140 184 H122 Z"/>
+  </g>
+
+  <g fill="#3DDC84">
+    <rect x="86" y="67" width="7" height="26" rx="3.5"/>
+    <rect x="117" y="67" width="7" height="26" rx="3.5"/>
+    <circle cx="105" cy="140" r="6"/>
+  </g>
+
+  <g stroke="#3DDC84" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="62,131 72,140 62,149"/>
+    <line x1="75" y1="149" x2="86" y2="149"/>
+    <polyline points="122,131 132,140 122,149"/>
+    <line x1="135" y1="149" x2="146" y2="149"/>
+  </g>
+</svg>

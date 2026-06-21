@@ -1,0 +1,64 @@
+name: Dependency Security
+
+on:
+  pull_request:
+    branches: [main, "epic/**"]
+  push:
+    branches: [main, "epic/**"]
+  schedule:
+    - cron: '23 9 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-scan:
+    name: Dependency scan (reporting)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.3
+      - name: Verify lockfile form
+        run: test -f bun.lock && ! test -f bun.lockb
+      - name: Install security scanners
+        run: scripts/install-security-tools.sh
+      - name: OSV-Scanner lockfile scan
+        continue-on-error: true
+        run: osv-scanner scan source --lockfile=bun.lock --config=osv-scanner.toml --format=sarif > osv-results.sarif
+      - name: Trivy filesystem scan
+        continue-on-error: true
+        run: trivy fs --scanners vuln --include-dev-deps --ignorefile .trivyignore.yaml --format sarif --output trivy-results.sarif .
+      - name: Upload security scan reports
+        if: always()
+        # Best-effort: the SARIF reports are advisory artifacts. Don't fail the
+        # reporting job when account-wide Actions artifact storage quota is
+        # temporarily exhausted; the gate job is the blocking signal.
+        continue-on-error: true
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: dependency-security-reports
+          path: |
+            osv-results.sarif
+            trivy-results.sarif
+          if-no-files-found: ignore
+          retention-days: 14
+
+  security-gate:
+    name: HIGH/CRITICAL fixable gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.3
+      - name: Verify lockfile form
+        run: test -f bun.lock && ! test -f bun.lockb
+      - name: Install security scanners
+        run: scripts/install-security-tools.sh
+      - name: Block fixable high and critical vulnerabilities
+        run: trivy fs --scanners vuln --include-dev-deps --ignorefile .trivyignore.yaml --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 .
+      - name: Block dependency licenses incompatible with MIT
+        # Trivy maps license categories to severities: permissive/notice/
+        # unencumbered (MIT/BSD/ISC/Apache-2.0/…) -> LOW; reciprocal (MPL/EPL) ->
+        # MEDIUM; restricted/copyleft (GPL/LGPL/AGPL) -> HIGH; forbidden/
+        # proprietary -> CRITICAL; unidentified -> UNKNOWN. Gate on everything
+        # above permissive so any non-permissive or unknown license fails for a
+        # human decision.
+        run: trivy fs --scanners license --severity UNKNOWN,MEDIUM,HIGH,CRITICAL --exit-code 1 .

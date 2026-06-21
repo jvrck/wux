@@ -1,0 +1,183 @@
+name: Preview
+
+on:
+  pull_request:
+    branches: [main, "epic/**"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag, or SHA to build. Defaults to the workflow ref.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build preview artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Resolve preview ref
+        id: preview-ref
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_REF: ${{ github.event.inputs.ref }}
+          DEFAULT_REPOSITORY: ${{ github.repository }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          DEFAULT_SHA: ${{ github.sha }}
+          REF_NAME: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          requested_ref="$INPUT_REF"
+          if [ -z "$requested_ref" ]; then
+            if [ "$EVENT_NAME" = "pull_request" ] && [ -n "$PR_HEAD_SHA" ]; then
+              requested_ref="$PR_HEAD_SHA"
+            else
+              requested_ref="$DEFAULT_SHA"
+            fi
+          fi
+
+          ref_label="$INPUT_REF"
+          if [ -z "$ref_label" ]; then
+            ref_label="$REF_NAME"
+          fi
+
+          checkout_repository="$PR_HEAD_REPOSITORY"
+          if [ -z "$checkout_repository" ]; then
+            checkout_repository="$DEFAULT_REPOSITORY"
+          fi
+
+          safe_ref="$(printf '%s' "$ref_label" | tr -c 'A-Za-z0-9._-' '-' | sed -E 's/-+/-/g; s/^-//; s/-$//' | cut -c1-80)"
+          if [ -z "$safe_ref" ]; then
+            safe_ref="ref"
+          fi
+
+          {
+            printf 'requested_ref=%s\n' "$requested_ref"
+            printf 'checkout_repository=%s\n' "$checkout_repository"
+            printf 'ref_label=%s\n' "$ref_label"
+            printf 'safe_ref=%s\n' "$safe_ref"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6.0.3
+        with:
+          repository: ${{ steps.preview-ref.outputs.checkout_repository }}
+          ref: ${{ steps.preview-ref.outputs.requested_ref }}
+          fetch-depth: 1
+
+      - name: Resolve source metadata
+        id: source
+        shell: bash
+        env:
+          SAFE_REF: ${{ steps.preview-ref.outputs.safe_ref }}
+        run: |
+          set -euo pipefail
+
+          source_sha="$(git rev-parse HEAD)"
+          short_sha="${source_sha:0:12}"
+          preview_version="0.0.0-preview.$short_sha"
+          artifact_name="wux-preview-$SAFE_REF-$short_sha"
+
+          {
+            printf 'source_sha=%s\n' "$source_sha"
+            printf 'short_sha=%s\n' "$short_sha"
+            printf 'preview_version=%s\n' "$preview_version"
+            printf 'artifact_name=%s\n' "$artifact_name"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.9'
+
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+
+      - name: Build preview binaries
+        shell: bash
+        env:
+          PREVIEW_VERSION: ${{ steps.source.outputs.preview_version }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist
+
+          while IFS=: read -r target asset; do
+            bun build src/index.ts \
+              --compile \
+              --target="$target" \
+              --define "process.env.WUX_VERSION=\"$PREVIEW_VERSION\"" \
+              --outfile "dist/$asset"
+            chmod 0755 "dist/$asset"
+          done <<'EOF'
+          bun-linux-x64:wux-linux-x64
+          bun-linux-arm64:wux-linux-arm64
+          bun-darwin-arm64:wux-darwin-arm64
+          bun-linux-x64-musl:wux-linux-x64-musl
+          EOF
+
+          test "$(./dist/wux-linux-x64 --version)" = "$PREVIEW_VERSION"
+
+      - name: Write build metadata
+        shell: bash
+        env:
+          ARTIFACT_NAME: ${{ steps.source.outputs.artifact_name }}
+          CHECKOUT_REPOSITORY: ${{ steps.preview-ref.outputs.checkout_repository }}
+          PREVIEW_VERSION: ${{ steps.source.outputs.preview_version }}
+          REF_LABEL: ${{ steps.preview-ref.outputs.ref_label }}
+          REQUESTED_REF: ${{ steps.preview-ref.outputs.requested_ref }}
+          SAFE_REF: ${{ steps.preview-ref.outputs.safe_ref }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          SHORT_SHA: ${{ steps.source.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+
+          bun --eval '
+            import { writeFileSync } from "node:fs";
+
+            const assets = [
+              "wux-linux-x64",
+              "wux-linux-arm64",
+              "wux-darwin-arm64",
+              "wux-linux-x64-musl",
+            ];
+            const info = {
+              artifact_name: process.env.ARTIFACT_NAME,
+              repository: process.env.GITHUB_REPOSITORY,
+              checkout_repository: process.env.CHECKOUT_REPOSITORY,
+              requested_ref: process.env.REQUESTED_REF,
+              ref_label: process.env.REF_LABEL,
+              safe_ref: process.env.SAFE_REF,
+              source_sha: process.env.SOURCE_SHA,
+              source_short_sha: process.env.SHORT_SHA,
+              preview_version: process.env.PREVIEW_VERSION,
+              built_at: new Date().toISOString(),
+              workflow: process.env.GITHUB_WORKFLOW,
+              run_id: process.env.GITHUB_RUN_ID,
+              run_attempt: process.env.GITHUB_RUN_ATTEMPT,
+              server_url: process.env.GITHUB_SERVER_URL,
+              assets,
+            };
+
+            writeFileSync("dist/BUILD_INFO.json", `${JSON.stringify(info, null, 2)}\n`);
+          '
+
+          cd dist
+          sha256sum wux-* BUILD_INFO.json > SHA256SUMS
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: ${{ steps.source.outputs.artifact_name }}
+          path: |
+            dist/wux-*
+            dist/BUILD_INFO.json
+            dist/SHA256SUMS
+          if-no-files-found: error
+          # Preview artifacts are disposable per-PR builds and previously dominated
+          # Actions storage (#148); the published GitHub Release is the durable record.
+          retention-days: 5

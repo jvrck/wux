@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.bun-build
+*.tsbuildinfo
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# Claude Code runtime artifacts (committed tooling under skills/ stays tracked)
+.claude/scheduled_tasks.lock
+.claude/worktrees/

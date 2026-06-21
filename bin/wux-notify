@@ -1,0 +1,5 @@
+#!/usr/bin/env bun
+
+import { runNotifyCli } from "../src/bin/wux-notify";
+
+process.exitCode = await runNotifyCli(process.argv.slice(2));

@@ -1,0 +1,17 @@
+# Trivy suppression file.
+#
+# No active suppressions.
+#
+# Every suppression must include an advisory id, owner, tracking issue or note,
+# reason, and expiry/review date. Put owner and tracking metadata in statement so
+# the context stays next to the advisory.
+vulnerabilities:
+  - id: CVE-2026-54290
+    expired_at: 2026-09-21
+    statement: "owner: @jvrck; tracking: OSS launch readiness (#44); reason: hono is a transitive dependency of @modelcontextprotocol/sdk's HTTP/SSE transport. wux uses the stdio MCP transport only (no HTTP server, no listening port, no CORS middleware), so the affected CORS Origin-reflection code path is never imported or executed; `bun build --compile` tree-shakes it out of the released binary. Unreachable in wux. Re-review by 2026-09-21 or when @modelcontextprotocol/sdk resolves hono>=4.12.25."
+
+# Template:
+# vulnerabilities:
+#   - id: CVE-2099-0001
+#     expired_at: 2026-09-01
+#     statement: "owner: @maintainer; tracking issue: #123; reason: false positive or accepted temporary risk"

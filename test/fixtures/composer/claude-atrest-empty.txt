@@ -1,0 +1,24 @@
+╭─── Claude Code v2.1.177 ─────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting        │
+│                  Welcome back you!                 │ started                 │
+│                                                    │ Run /init to create a … │
+│                       ▐▛███▜▌                      │ ─────────────────────── │
+│                      ▝▜█████▛▘                     │ What's new              │
+│                        ▘▘ ▝▝                       │ Session titles are now… │
+│   Opus 4.8 (1M context) with xh… · Claude Pro ·    │ Added `footerLinksRege… │
+│   user@host.com's Organization                     │ Improved Bedrock crede… │
+│                    /tmp/fixcap                     │ /release-notes for more │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+────────────────────────────────────────────────────────────────────────────────
+❯ Try "how do I log an error?"
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+
+
+
+
+
+
+

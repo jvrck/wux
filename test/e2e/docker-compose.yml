@@ -1,0 +1,32 @@
+services:
+  remote:
+    build:
+      context: ../..
+      dockerfile: test/e2e/ssh-target.Dockerfile
+    volumes:
+      - ${WUX_BIN:?WUX_BIN is required}:/usr/local/bin/wux:ro
+      - ${WUX_E2E_SSH_DIR:?WUX_E2E_SSH_DIR is required}/authorized_keys:/root/.ssh/authorized_keys:ro
+      - ${WUX_E2E_STATE_DIR:?WUX_E2E_STATE_DIR is required}:/state
+      - ${WUX_E2E_WORK_DIR:?WUX_E2E_WORK_DIR is required}:/work
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /root/.ssh/authorized_keys && pgrep -x sshd >/dev/null"]
+      interval: 1s
+      timeout: 1s
+      retries: 30
+
+  controller:
+    build:
+      context: ../..
+      dockerfile: test/e2e/ssh-target.Dockerfile
+    depends_on:
+      remote:
+        condition: service_healthy
+    environment:
+      WUX_REMOTE_SMOKE_NAME: ${WUX_REMOTE_SMOKE_NAME:?WUX_REMOTE_SMOKE_NAME is required}
+    volumes:
+      - ${WUX_BIN:?WUX_BIN is required}:/usr/local/bin/wux:ro
+      - ${WUX_E2E_SSH_DIR:?WUX_E2E_SSH_DIR is required}:/ssh:ro
+      - ${WUX_E2E_OUTPUT_DIR:?WUX_E2E_OUTPUT_DIR is required}:/output
+      - ${WUX_E2E_WORK_DIR:?WUX_E2E_WORK_DIR is required}:/work
+      - ../../test/e2e/run-compose-controller.sh:/usr/local/bin/run-compose-controller:ro
+    command: ["/usr/local/bin/run-compose-controller"]
