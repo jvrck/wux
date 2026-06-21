@@ -5,13 +5,65 @@ on:
     tags:
       - '20[0-9][0-9].*'
 
+# Default to read-only; every job that touches the release elevates to
+# contents: write explicitly. Binaries are carried between jobs as assets on a
+# draft GitHub Release (not actions/{upload,download}-artifact), so each job
+# that creates, uploads to, downloads from, or publishes the release needs
+# push (write) access — draft releases are invisible to read-only tokens.
 permissions:
   contents: read
 
+env:
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+  TAG: ${{ github.ref_name }}
+
 jobs:
+  create-release:
+    name: Create draft release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6.0.3
+      - name: Create or reuse draft release
+        run: |
+          set -euo pipefail
+          if ! [[ "$TAG" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$ ]]; then
+            echo "::error::release tag must be CalVer YYYY.MM.DD or YYYY.MM.DD.N: $TAG"
+            exit 1
+          fi
+          # Notes always come from the CHANGELOG section for the tag. The extractor
+          # exits non-zero (failing the job) if the section is missing or empty, so
+          # a missing changelog entry blocks the release before anything builds —
+          # and a reused draft gets its notes refreshed from CHANGELOG (never left
+          # with stale or manually-authored notes).
+          scripts/extract-changelog-section.sh "$TAG" CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
+          # Idempotent reuse, but ONLY of a draft. gh resolves drafts by tag via
+          # its draft-listing fallback (needs push access), so this finds a draft
+          # left by an earlier failed attempt and reuses it. If the release is
+          # already PUBLISHED, refuse: re-running would `gh release upload
+          # --clobber` fresh binaries over the public assets before validation,
+          # which would defeat the draft-until-validated safety property. (The old
+          # workflow also refused, since `gh release create` errors on an existing
+          # tag.) Re-cutting a published release requires deleting it first.
+          if existing_is_draft="$(gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null)"; then
+            if [ "$existing_is_draft" != "true" ]; then
+              echo "::error::release $TAG already exists and is published; refusing to re-run (it would clobber public assets before validation). Delete the release to re-cut it."
+              exit 1
+            fi
+            echo "Reusing existing draft release for $TAG; refreshing notes from CHANGELOG."
+            gh release edit "$TAG" --draft --notes-file "$RUNNER_TEMP/release-notes.md"
+          else
+            gh release create "$TAG" --draft --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi
+
   build:
     name: Build ${{ matrix.asset }}
     runs-on: ubuntu-latest
+    needs: create-release
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -25,14 +77,26 @@ jobs:
           - target: bun-linux-x64-musl
             asset: wux-linux-x64-musl
     steps:
+      - name: Assert release is still a draft
+        # Same fail-closed guard as the publish job. A selected re-run of just
+        # this build matrix job after the release is published would
+        # `gh release upload --clobber` a freshly-built (and un-revalidated)
+        # binary over the public asset. Refuse. A normal run sees the draft
+        # create-release made and proceeds. (Run before checkout/build so a
+        # published-release re-run fails in seconds without rebuilding.)
+        run: |
+          set -euo pipefail
+          is_draft="$(gh release view "$TAG" --json isDraft --jq '.isDraft')"
+          if [ "$is_draft" != "true" ]; then
+            echo "::error::release $TAG is already published; refusing to re-upload a build asset (would mutate a public asset). Delete the release to re-cut it."
+            exit 1
+          fi
       - uses: actions/checkout@v6.0.3
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.3.9'
       - run: bun install --frozen-lockfile
       - name: Build stamped binary
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           VERSION="${TAG#v}"
@@ -46,21 +110,23 @@ jobs:
           if [ "${{ matrix.target }}" = "bun-linux-x64" ]; then
             test "$(./dist/${{ matrix.asset }} --version)" = "$VERSION"
           fi
-      - uses: actions/upload-artifact@v7.0.1
-        with:
-          name: ${{ matrix.asset }}
-          path: dist/${{ matrix.asset }}
-          if-no-files-found: error
-          # Intermediate matrix build artifacts: the release job downloads these
-          # within the same run, after which the published GitHub Release assets are
-          # the durable record. Keep a short window so they do not accumulate (#148);
-          # 3 days (not 1) leaves a release anomaly recoverable.
-          retention-days: 3
+      - name: Upload binary to draft release
+        # Replaces actions/upload-artifact: the binary is carried to the
+        # validate and publish jobs as an asset on the draft release.
+        # --clobber makes re-runs overwrite any prior upload of this asset.
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" "dist/${{ matrix.asset }}" --clobber
 
   validate-native:
     name: Validate ${{ matrix.asset }}
     runs-on: ${{ matrix.os }}
-    needs: build
+    needs: [create-release, build]
+    permissions:
+      # write is load-bearing: a draft release is invisible to read-only tokens,
+      # so `gh release download` of the draft asset needs push (write) access.
+      # Do not tighten to read — it would 404 the download.
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -75,7 +141,6 @@ jobs:
             os: macos-15
             setup: brew
     env:
-      TAG: ${{ github.ref_name }}
       ASSET: ${{ matrix.asset }}
     steps:
       - uses: actions/checkout@v6.0.3
@@ -113,10 +178,13 @@ jobs:
           esac
           tmux -V
 
-      - uses: actions/download-artifact@v8.0.1
-        with:
-          name: ${{ matrix.asset }}
-          path: ${{ runner.temp }}/release-assets/${{ matrix.asset }}
+      - name: Download release asset from draft
+        # Replaces actions/download-artifact. -D places the file at
+        # <dir>/$ASSET, matching the old artifact layout the smoke expects.
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" -p "$ASSET" -D "$RUNNER_TEMP/release-assets/$ASSET" --clobber
 
       - name: Verify build artifact
         id: artifact
@@ -151,21 +219,45 @@ jobs:
             WUX_SMOKE_DIAG_DIR="$RUNNER_TEMP/diagnostics/$ASSET" \
             scripts/smoke-release-asset.sh
 
-      - name: Upload diagnostics
+      - name: Dump smoke diagnostics to job summary
+        # Replaces the if: failure() diagnostics upload-artifact (also quota-bound).
+        # Best-effort; never fails the job.
         if: failure()
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: release-smoke-${{ matrix.asset }}-${{ matrix.os }}-diagnostics
-          path: |
-            ${{ runner.temp }}/diagnostics/${{ matrix.asset }}
-            ${{ runner.temp }}/smoke/${{ matrix.asset }}/state/wux/runs
-          if-no-files-found: ignore
-          retention-days: 14
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          {
+            echo "## Smoke diagnostics — $ASSET (${{ matrix.os }})"
+            echo
+            for d in "$RUNNER_TEMP/diagnostics/$ASSET" "$RUNNER_TEMP/smoke/$ASSET/state/wux/runs"; do
+              [ -d "$d" ] || continue
+              echo "### $d"
+              echo '```'
+              find "$d" -type f
+              echo '```'
+              find "$d" -type f | while IFS= read -r f; do
+                echo "<details><summary>$f</summary>"
+                echo
+                echo '```'
+                tail -c 20000 "$f"
+                echo
+                echo '```'
+                echo "</details>"
+              done
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
 
   validate-linux-musl:
     name: Validate ${{ matrix.asset }}
     runs-on: ubuntu-latest
-    needs: build
+    needs: [create-release, build]
+    permissions:
+      # write is load-bearing: a draft release is invisible to read-only tokens,
+      # so `gh release download` of the draft asset needs push (write) access.
+      # Do not tighten to read — it would 404 the download.
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -173,7 +265,6 @@ jobs:
           - asset: wux-linux-x64-musl
             image: alpine:3.20
     env:
-      TAG: ${{ github.ref_name }}
       ASSET: ${{ matrix.asset }}
     steps:
       - uses: actions/checkout@v6.0.3
@@ -187,10 +278,12 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/download-artifact@v8.0.1
-        with:
-          name: ${{ matrix.asset }}
-          path: ${{ runner.temp }}/release-assets/${{ matrix.asset }}
+      - name: Download release asset from draft
+        # Replaces actions/download-artifact; -D yields <dir>/$ASSET as before.
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" -p "$ASSET" -D "$RUNNER_TEMP/release-assets/$ASSET" --clobber
 
       - name: Run Alpine lifecycle smoke
         shell: bash
@@ -222,15 +315,35 @@ jobs:
               WUX_BIN=/tmp/wux /scripts/smoke-release-asset.sh
             '
 
-      - name: Upload diagnostics
+      - name: Dump smoke diagnostics to job summary
+        # Replaces the if: failure() diagnostics upload-artifact (also quota-bound).
+        # Best-effort; never fails the job.
         if: failure()
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: release-smoke-wux-linux-x64-musl-alpine-diagnostics
-          path: |
-            ${{ runner.temp }}/diagnostics/wux-linux-x64-musl
-          if-no-files-found: ignore
-          retention-days: 14
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          d="$RUNNER_TEMP/diagnostics/$ASSET"
+          {
+            echo "## Smoke diagnostics — $ASSET (alpine)"
+            echo
+            if [ -d "$d" ]; then
+              echo "### $d"
+              echo '```'
+              find "$d" -type f
+              echo '```'
+              find "$d" -type f | while IFS= read -r f; do
+                echo "<details><summary>$f</summary>"
+                echo
+                echo '```'
+                tail -c 20000 "$f"
+                echo
+                echo '```'
+                echo "</details>"
+              done
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
 
   release:
     name: Publish GitHub Release
@@ -238,7 +351,29 @@ jobs:
     needs: [validate-native, validate-linux-musl]
     permissions:
       contents: write
+    env:
+      # The exact release binaries. Must stay in sync with the build matrix
+      # `asset` values. Enumerated (not globbed) so a reused/polluted draft
+      # cannot inject stray assets into the download set or into SHA256SUMS.
+      # This single order drives both the download loop and SHA256SUMS; it is
+      # alphabetical, which is what the previous `sha256sum wux-*` glob produced,
+      # so published checksums stay byte-identical.
+      ASSETS: wux-darwin-arm64 wux-linux-arm64 wux-linux-x64 wux-linux-x64-musl
     steps:
+      - name: Assert release is still a draft
+        # Fail closed before doing anything else. If the release is already
+        # published — e.g. a selected re-run of just this job after a prior
+        # successful publish, which would NOT re-run create-release's guard —
+        # the upload (--clobber) and publish steps below would mutate assets
+        # users may already have fetched. Refuse instead. A normal first run
+        # finds the draft create-release made and proceeds to publish it.
+        run: |
+          set -euo pipefail
+          is_draft="$(gh release view "$TAG" --json isDraft --jq '.isDraft')"
+          if [ "$is_draft" != "true" ]; then
+            echo "::error::release $TAG is already published; refusing to re-run the publish job (it would mutate public assets). Delete the release to re-cut it."
+            exit 1
+          fi
       - uses: actions/checkout@v6.0.3
       - name: Install security scanners
         run: scripts/install-security-tools.sh
@@ -247,10 +382,17 @@ jobs:
           set -euo pipefail
           trivy fs --format cyclonedx --include-dev-deps --output sbom.cdx.json .
           trivy sbom sbom.cdx.json --ignorefile .trivyignore.yaml --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1
-      - uses: actions/download-artifact@v8.0.1
-        with:
-          path: dist
-          merge-multiple: true
+      - name: Download release binaries from draft
+        # Replaces actions/download-artifact (merge-multiple). The draft already
+        # carries the 4 binaries uploaded by build; pull exactly those (by name)
+        # flat into dist/.
+        run: |
+          set -euo pipefail
+          read -ra assets <<< "$ASSETS"
+          mkdir -p dist
+          for asset in "${assets[@]}"; do
+            gh release download "$TAG" -p "$asset" -D dist --clobber
+          done
       - name: Stage release SBOM
         run: |
           set -euo pipefail
@@ -258,19 +400,59 @@ jobs:
       - name: Create SHA256SUMS
         run: |
           set -euo pipefail
+          read -ra assets <<< "$ASSETS"
           cd dist
-          sha256sum wux-* sbom.cdx.json > SHA256SUMS
-      - name: Extract release notes from changelog
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          scripts/extract-changelog-section.sh "$TAG" CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
-      - name: Create release and upload assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          sha256sum "${assets[@]}" sbom.cdx.json > SHA256SUMS
+      - name: Upload SBOM and checksums to release
         run: |
           set -euo pipefail
           cd dist
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/release-notes.md" wux-* sbom.cdx.json SHA256SUMS
+          gh release upload "$TAG" sbom.cdx.json SHA256SUMS --clobber
+      - name: Verify draft asset set before publish
+        # Publishing flips EVERY asset attached to the draft public at once.
+        # Assert the draft carries exactly the validated set — the 4 binaries
+        # plus sbom.cdx.json and SHA256SUMS — so a reused/polluted draft can't
+        # ship a stray asset that was never smoked and isn't in SHA256SUMS.
+        # Fail closed (don't auto-delete); a human inspects an anomalous draft.
+        run: |
+          set -euo pipefail
+          read -ra assets <<< "$ASSETS"
+          expected=("${assets[@]}" sbom.cdx.json SHA256SUMS)
+          actual=()
+          while IFS= read -r name; do
+            [ -n "$name" ] && actual+=("$name")
+          done < <(gh release view "$TAG" --json assets --jq '.assets[].name')
+          fail=0
+          for name in "${actual[@]}"; do
+            found=0
+            for e in "${expected[@]}"; do [ "$name" = "$e" ] && { found=1; break; }; done
+            if [ "$found" -eq 0 ]; then
+              echo "::error::unexpected asset on draft release $TAG: '$name' (never smoked, absent from SHA256SUMS); refusing to publish"
+              fail=1
+            fi
+          done
+          for e in "${expected[@]}"; do
+            found=0
+            for name in "${actual[@]}"; do [ "$name" = "$e" ] && { found=1; break; }; done
+            if [ "$found" -eq 0 ]; then
+              echo "::error::expected release asset missing before publish: '$e'"
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] || exit 1
+          echo "Verified draft asset set: ${expected[*]}"
+      - name: Publish release
+        # Flip the draft public only after both validate jobs and the SBOM scan
+        # passed. A failure anywhere upstream leaves the release as a draft.
+        # --latest is required: install.sh and `wux upgrade` resolve the newest
+        # build via the repo's "Latest" release pointer (releases/latest), which
+        # the original `gh release create` set by default.
+        run: |
+          set -euo pipefail
+          # Defensive: the publish gate refuses a non-CalVer tag even though every
+          # upstream job already guards it (this is the step that goes public).
+          if ! [[ "$TAG" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$ ]]; then
+            echo "::error::refusing to publish non-CalVer tag: $TAG"
+            exit 1
+          fi
+          gh release edit "$TAG" --draft=false --latest
