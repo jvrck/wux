@@ -24,8 +24,12 @@ describe("GitHub workflows", () => {
     expect(text).not.toContain("actions/upload-artifact@v4");
     expect(text).not.toContain("actions/download-artifact@v4");
     expect(text).toContain("actions/checkout@v6.0.3");
+    // upload-artifact is still pinned where it survives (e2e/security failure
+    // diagnostics). download-artifact is no longer invoked anywhere: release.yml
+    // carries binaries as draft-release assets, so the action is fully removed
+    // rather than pinned to a presence-checked version.
     expect(text).toContain("actions/upload-artifact@v7.0.1");
-    expect(text).toContain("actions/download-artifact@v8.0.1");
+    expect(text).not.toContain("uses: actions/download-artifact");
   });
 
   test("dependency security workflow scans lockfiles on PRs and a weekly schedule", async () => {
@@ -107,38 +111,48 @@ describe("GitHub workflows", () => {
     expect(controller).toContain("wux --host remote");
   });
 
-  test("preview workflow builds ref-scoped artifacts without publishing releases", async () => {
+  test("preview workflow cross-compiles the release target set without uploading Actions artifacts", async () => {
     const text = await readFile(join(workflowsDir, "preview.yml"), "utf8");
 
     expect(text).toContain("pull_request:");
     expect(text).toContain("workflow_dispatch:");
-    expect(text).toContain("bun run typecheck");
-    expect(text).toContain("bun test");
     expect(text).toContain("0.0.0-preview.$short_sha");
+    // Cross-compiles the full release target set so a target-specific compile
+    // break is caught at PR time, before a release tag hits release.yml.
+    expect(text).toContain("bun-linux-arm64:wux-linux-arm64");
+    expect(text).toContain("bun-darwin-arm64:wux-darwin-arm64");
+    expect(text).toContain("bun-linux-x64-musl:wux-linux-x64-musl");
     expect(text).toContain("BUILD_INFO.json");
     expect(text).toContain("SHA256SUMS");
-    expect(text).toContain("actions/upload-artifact@v7.0.1");
+    // Preview binaries are a cross-compile gate, not a downloadable artifact:
+    // the manifest is recorded in the run summary instead of consuming Actions
+    // artifact storage (#148), and no release is ever published.
+    expect(text).toContain("GITHUB_STEP_SUMMARY");
+    expect(text).not.toContain("uses: actions/upload-artifact");
     expect(text).not.toContain("gh release create");
     expect(text).not.toContain("scripts/smoke-remote-ssh.sh");
   });
 
-  test("disposable Actions artifacts use short retention to avoid storage blowups", async () => {
+  test("preview and release carry binaries without disposable Actions artifacts", async () => {
     const preview = await readFile(join(workflowsDir, "preview.yml"), "utf8");
     const release = await readFile(join(workflowsDir, "release.yml"), "utf8");
 
-    // Preview build artifacts are disposable per-PR builds and previously
-    // dominated Actions storage (#148) — short window, never the old 14 days.
-    expect(preview).toContain("retention-days: 5");
-    expect(preview).not.toContain("retention-days: 14");
+    // Preview builds previously dominated Actions storage (#148) and tripped the
+    // account-wide artifact quota. The preview job now cross-compiles and records
+    // its manifest in the run summary instead of uploading an Actions artifact.
+    expect(preview).not.toContain("uses: actions/upload-artifact");
+    expect(preview).not.toContain("uses: actions/download-artifact");
+    expect(preview).toContain("GITHUB_STEP_SUMMARY");
 
-    // The intermediate matrix build artifacts the release job downloads in-run
-    // get a short explicit retention; the published Release assets are durable.
-    expect(release).toContain("retention-days: 3");
-
-    // Release publishing still resolves those artifacts within the same run: the
-    // matrix build uploads them and later jobs download them.
-    expect(release).toContain("uses: actions/upload-artifact@v7.0.1");
-    expect(release).toContain("uses: actions/download-artifact@v8.0.1");
+    // The release workflow carries binaries between jobs as assets on a draft
+    // GitHub Release (gh release upload/download), not actions/{upload,download}-
+    // artifact, then flips the validated draft public.
+    expect(release).not.toContain("uses: actions/upload-artifact");
+    expect(release).not.toContain("uses: actions/download-artifact");
+    expect(release).toContain("gh release upload");
+    expect(release).toContain("gh release download");
+    expect(release).toContain("--draft");
+    expect(release).toContain("--draft=false");
   });
 
   test("preview docs align artifact previews with the E2E workflow", async () => {

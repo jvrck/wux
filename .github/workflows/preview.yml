@@ -95,8 +95,8 @@ jobs:
           bun-version: '1.3.9'
 
       - run: bun install --frozen-lockfile
-      - run: bun run typecheck
-      - run: bun test
+      # typecheck and the test suite are gated by the CI workflow on the same PR;
+      # this job is purely a cross-compile gate, so it does not re-run them.
 
       - name: Build preview binaries
         shell: bash
@@ -170,14 +170,32 @@ jobs:
           cd dist
           sha256sum wux-* BUILD_INFO.json > SHA256SUMS
 
-      - uses: actions/upload-artifact@v7.0.1
-        with:
-          name: ${{ steps.source.outputs.artifact_name }}
-          path: |
-            dist/wux-*
-            dist/BUILD_INFO.json
-            dist/SHA256SUMS
-          if-no-files-found: error
-          # Preview artifacts are disposable per-PR builds and previously dominated
-          # Actions storage (#148); the published GitHub Release is the durable record.
-          retention-days: 5
+      - name: Record preview build manifest in the run summary
+        # Preview binaries are a cross-compile gate, not a downloadable artifact.
+        # Carrying them as Actions artifacts previously dominated account-wide
+        # storage (#148) and tripped the artifact quota, so the build manifest
+        # (preview version + per-target SHA256SUMS) is recorded in the run summary
+        # instead — no Actions artifact storage is consumed. To obtain a runnable
+        # binary, build from source or use the published GitHub Release assets.
+        shell: bash
+        env:
+          PREVIEW_VERSION: ${{ steps.source.outputs.preview_version }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Preview build — $PREVIEW_VERSION"
+            echo
+            echo "Cross-compiled the release target set at this ref. Binaries are not"
+            echo "uploaded as Actions artifacts; build from source or use the GitHub"
+            echo "Release assets for a runnable binary."
+            echo
+            echo "### BUILD_INFO.json"
+            echo '```json'
+            cat dist/BUILD_INFO.json
+            echo '```'
+            echo
+            echo "### SHA256SUMS"
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
