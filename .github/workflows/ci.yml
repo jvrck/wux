@@ -13,13 +13,13 @@ jobs:
         with:
           bun-version: '1.3.9'
       - run: sudo apt-get update && sudo apt-get install -y tmux
-      # The `(integration, real tmux)` suite drives a real tmux server. wux's
-      # createSession elevates the global history-limit (`set-option -g`) before
-      # `new-session`, which needs a server already running; a clean runner has
-      # none until the first `new-session`. Start a keepalive server so the test
-      # precondition mirrors an operator host. CI setup only — no tool change.
-      - name: Start a tmux server for integration tests
-        run: tmux new-session -d -s wux-ci-keepalive
+      # The `(integration, real tmux)` suite drives a real tmux server, but we do
+      # NOT pre-start one: a clean runner has no tmux server, which is exactly the
+      # first-run precondition an operator hits. createSession tolerates the
+      # pre-server history-limit elevation failing and lets `new-session -f <conf>`
+      # start the server (the 2026.06.21.1 fix), so the suite's first `wux run`
+      # exercises the serverless first-run path. Pre-starting a keepalive here
+      # would mask that path — removing it makes this real regression coverage.
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test

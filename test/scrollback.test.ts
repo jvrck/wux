@@ -221,7 +221,12 @@ describe("createSession scrollback (integration, real tmux)", () => {
       expect(Number(hl)).toBeGreaterThanOrEqual(50000);
 
       // (b) effective on the INITIAL pane: an early line survives past the old cap.
+      // The emitter loop runs asynchronously inside the pane, so line-100 can flush
+      // (and satisfy the poll below) well before the loop reaches line-4999. Poll for
+      // the last line too, so the capture-and-assert waits for the full range to land
+      // instead of racing the emitter and capturing a partially-filled buffer.
       expect(await paneHistoryHas(session, "line-100")).toBe(true);
+      expect(await paneHistoryHas(session, "line-4999")).toBe(true);
       const full = (await runProcess(["tmux", "capture-pane", "-p", "-t", `=${session}:`, "-S", "-"])).stdout;
       expect(full).toContain("line-4999");
 
