@@ -10,6 +10,12 @@ intentionally not reproduced here.
 
 ## Unreleased
 
+## 2026.08.04
+
+### Security
+
+- Updated transitive dependencies included through the MCP SDK to patched releases, resolving four HIGH-severity dependency advisories.
+
 ## 2026.06.21.1
 
 Initial public release.
