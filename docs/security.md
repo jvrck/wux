@@ -43,6 +43,19 @@ signals unless the policy changes.
   notifies maintainers, but they do not block any merge. Track scheduled
   findings in a GitHub issue.
 
+## Dependabot Remediation
+
+Dependabot complements the OSV-Scanner and Trivy detection gates with a repair
+path. Vulnerability alerts and automated security updates can open a security
+PR as soon as GitHub identifies an eligible fix; security remediation is not
+held for the routine schedule, including when the available fix is a major
+version update.
+
+Separately, `.github/dependabot.yml` creates one routine Bun PR and one routine
+GitHub Actions PR each Monday in `Australia/Sydney`. Each routine PR groups
+minor and patch updates for its ecosystem. Routine major upgrades are excluded
+and remain deliberate human work.
+
 ## Release SBOM
 
 The tag-triggered release workflow generates `sbom.cdx.json` with Trivy, includes
