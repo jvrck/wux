@@ -10,6 +10,12 @@ intentionally not reproduced here.
 
 ## Unreleased
 
+### Fixed
+
+- Bind new runs to their exact creating tmux socket so lifecycle commands keep
+  routing correctly across simultaneous tmux servers; legacy run metadata keeps
+  its ambient-server fallback.
+
 ## 2026.08.04
 
 ### Security

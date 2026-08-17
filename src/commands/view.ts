@@ -12,7 +12,9 @@ export interface ViewOptions {
 export interface ViewResult {
   name: string;
   tmuxSession: string;
-  // tmux pane target for `tmux attach -t ...` (exact-match form).
+  // Exact socket persisted at creation; absent only for legacy metadata.
+  tmuxSocketPath?: string;
+  // Socket-qualified tmux invocation fragment, never an ambient-server hint.
   tmuxTarget: string;
   runDir: string;
   paneLogPath: string;
@@ -27,7 +29,10 @@ export async function viewCommand(options: ViewOptions): Promise<ViewResult> {
   return {
     name: meta.name,
     tmuxSession: meta.tmuxSession,
-    tmuxTarget: `=${meta.tmuxSession}:`,
+    ...(meta.tmuxSocketPath !== undefined ? { tmuxSocketPath: meta.tmuxSocketPath } : {}),
+    tmuxTarget: meta.tmuxSocketPath
+      ? `-S ${JSON.stringify(meta.tmuxSocketPath)} attach-session -t =${meta.tmuxSession}`
+      : `attach-session -t =${meta.tmuxSession}`,
     runDir: dir,
     paneLogPath: join(dir, "pane.log"),
     lastInputBy: input.lastInputBy,

@@ -4,7 +4,7 @@ import { WuxError } from "./errors";
 import { appendEvent } from "./events";
 import { currentOwner } from "./owner";
 import { runDir, runsRoot } from "./state";
-import { hasSession, tmuxSessionName } from "./tmux";
+import { hasSession, socketBoundRunner, tmuxSessionName } from "./tmux";
 
 export type RunBackend = "shell" | "claude" | "codex";
 export type RunStatus = "running" | "waiting" | "blocked" | "stopped";
@@ -14,6 +14,8 @@ export interface RunMeta {
   name: string;
   backend: RunBackend;
   tmuxSession: string;
+  // Present for every run created by current Wux. Omitted only by legacy state.
+  tmuxSocketPath?: string;
   cwd: string;
   owner: string;
   createdAt: string;
@@ -110,7 +112,7 @@ export async function listRuns(): Promise<RunMeta[]> {
 
 export async function markRun(name: string, status: MarkStatus): Promise<RunMeta> {
   const meta = await loadRun(name);
-  const live = await hasSession(meta.tmuxSession);
+  const live = await hasSession(meta.tmuxSession, socketBoundRunner(meta.tmuxSocketPath));
   if (status === "stopped" && live) {
     throw new WuxError(`tmux session is still running for ${name}: ${meta.tmuxSession}`);
   }
@@ -153,7 +155,7 @@ export async function requireLiveRun(name: string): Promise<RunMeta> {
   if (meta.status === "stopped") {
     throw new WuxError(`run is stopped: ${name}`);
   }
-  if (!(await hasSession(meta.tmuxSession))) {
+  if (!(await hasSession(meta.tmuxSession, socketBoundRunner(meta.tmuxSocketPath)))) {
     throw new WuxError(`tmux session is not running for ${name}: ${meta.tmuxSession}`);
   }
   return meta;

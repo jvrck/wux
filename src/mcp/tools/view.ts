@@ -28,6 +28,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
           identity: identityFor(resolved, result.name, result.tmuxSession),
           name: result.name,
           tmuxTarget: result.tmuxTarget,
+          ...(result.tmuxSocketPath !== undefined ? { tmuxSocketPath: result.tmuxSocketPath } : {}),
           runDir: result.runDir,
           paneLogPath: result.paneLogPath,
           attachCommand: `wux attach ${result.name}`,
@@ -36,17 +37,13 @@ export function register(server: McpServer, ctx: ToolContext): void {
         });
       }
 
-      // Remote/host: the run dir, pane.log, and last-input live on the remote host,
-      // not locally — so we report only what is derivable here (the deterministic
-      // tmux target) plus the exact SSH attach command, without fabricating local
-      // paths or last-input values.
+      // Remote/host: have the target Wux resolve its metadata when attach runs.
+      // Do not invent an ambient raw tmux command here: its socket path is host-local.
       const tmuxSession = tmuxSessionName(name);
-      const tmuxTarget = `=${tmuxSession}:`;
       return toolResult({
         identity: identityFor(resolved, name, tmuxSession),
         name,
-        tmuxTarget,
-        attachCommand: `ssh -t ${resolved.host as string} tmux attach -t '${tmuxTarget}'`,
+        attachCommand: `ssh -t ${resolved.host as string} wux attach ${name}`,
         note: "run dir, pane.log, and last-input are on the remote host; run wux read/list against this target to inspect them",
       });
     },

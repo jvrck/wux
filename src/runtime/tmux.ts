@@ -7,6 +7,16 @@ import { stateRoot } from "./state";
 
 export type TmuxRunner = (args: string[]) => Promise<ProcessResult>;
 
+// Run metadata stores the server socket rather than an ambient TMUX_TMPDIR.  Keep
+// qualification here so callers cannot accidentally rebuild tmux argv differently.
+export function socketBoundRunner(socketPath: string | undefined, runner: TmuxRunner = runProcess): TmuxRunner {
+  if (!socketPath) return runner;
+  return (args) => {
+    if (args[0] !== "tmux") return runner(args);
+    return runner(["tmux", "-S", socketPath, ...args.slice(1)]);
+  };
+}
+
 // Generous in-memory scrollback so a human who attaches a wux session can read
 // back long agent turns in copy-mode. tmux's 2000-line default loses the oldest
 // output from the pane (the pane.log file still has it, but that is not what an
@@ -42,9 +52,20 @@ export async function requireTmux(runner: TmuxRunner = runProcess): Promise<void
   }
 }
 
-export async function hasSession(session: string): Promise<boolean> {
-  const result = await runProcess(["tmux", "has-session", "-t", exactTarget(session)]);
+export async function hasSession(session: string, runner: TmuxRunner = runProcess): Promise<boolean> {
+  const result = await runner(["tmux", "has-session", "-t", exactTarget(session)]);
   return result.code === 0;
+}
+
+// Ask the server that created the session.  This is authoritative for both the
+// default server and an isolated TMUX_TMPDIR server; never persist the parent dir.
+export async function discoverSocketPath(session: string, runner: TmuxRunner = runProcess): Promise<string> {
+  const result = await runner(["tmux", "display-message", "-p", "-t", exactTarget(session), "-F", "#{socket_path}"]);
+  const socketPath = result.stdout.trim();
+  if (result.code !== 0 || socketPath.length === 0) {
+    throw new WuxError(`failed to discover tmux socket for ${session}: ${result.stderr || result.stdout}`.trim());
+  }
+  return socketPath;
 }
 
 function exactTarget(session: string): string {
@@ -654,8 +675,8 @@ export async function sendLiteral(session: string, text: string, options: SendLi
   return { submission, retried };
 }
 
-export async function capturePane(session: string, tail: number): Promise<string> {
-  const result = await runProcess(["tmux", "capture-pane", "-p", "-t", exactPaneTarget(session), "-S", `-${tail}`]);
+export async function capturePane(session: string, tail: number, runner: TmuxRunner = runProcess): Promise<string> {
+  const result = await runner(["tmux", "capture-pane", "-p", "-t", exactPaneTarget(session), "-S", `-${tail}`]);
   if (result.code !== 0) {
     throw new WuxError(`failed to read ${session}: ${result.stderr || result.stdout}`.trim());
   }
@@ -716,17 +737,23 @@ export async function paneForegroundActivity(session: string, probe: PaneActivit
   return currentCommand === shellName ? "idle" : "foreground-busy";
 }
 
-export function attachArgs(session: string, env: NodeJS.ProcessEnv = process.env): string[] {
-  if (env.TMUX) return ["tmux", "switch-client", "-t", exactTarget(session)];
-  return ["tmux", "attach-session", "-t", exactTarget(session)];
+export function attachArgs(session: string, env: NodeJS.ProcessEnv = process.env, socketPath?: string): string[] {
+  const prefix = socketPath ? ["tmux", "-S", socketPath] : ["tmux"];
+  if (!socketPath) return env.TMUX ? [...prefix, "switch-client", "-t", exactTarget(session)] : [...prefix, "attach-session", "-t", exactTarget(session)];
+  const currentSocket = env.TMUX?.split(",", 1)[0];
+  if (env.TMUX && currentSocket !== socketPath) {
+    throw new WuxError(`run belongs to tmux server ${socketPath}; attach from outside the current tmux client`);
+  }
+  return env.TMUX ? [...prefix, "switch-client", "-t", exactTarget(session)] : [...prefix, "attach-session", "-t", exactTarget(session)];
 }
 
 export async function attachSession(options: {
   session: string;
+  socketPath?: string;
   env?: NodeJS.ProcessEnv;
   runner?: TmuxRunner;
 }): Promise<void> {
-  const args = attachArgs(options.session, options.env);
+  const args = attachArgs(options.session, options.env, options.socketPath);
   const result = await (options.runner ?? runInteractiveProcess)(args);
   if (result.code !== 0) {
     throw new WuxError(`failed to attach to ${options.session}: ${result.stderr || result.stdout || `tmux exited ${result.code}`}`.trim());

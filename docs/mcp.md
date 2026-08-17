@@ -152,3 +152,11 @@ Read this before pointing a desktop app at `wux mcp`.
 
 No web-terminal bridge, no network-exposed MCP endpoint, no per-run locks/leases,
 no secret redaction, and no autonomous turn I/O / `wux wait` runtime.
+
+# Socket-bound runs
+
+The local MCP tools load run metadata before touching tmux, so runs created by
+current Wux are addressed through their persisted exact tmux socket. Remote MCP
+calls forward the Wux command to the target host; they never copy a target-host
+socket path to the caller. Legacy metadata without a socket continues to use the
+target process's ambient tmux behavior.

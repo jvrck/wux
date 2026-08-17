@@ -16,6 +16,7 @@ import {
   hasSession as hasTmuxSession,
   type PaneActivity,
   paneForegroundActivity as probePaneActivity,
+  socketBoundRunner,
 } from "../runtime/tmux";
 
 export type CompletedVia = "hook" | "sentinel" | "quiescence";
@@ -98,6 +99,7 @@ export async function resolveSignalSnapshot(meta: SnapshotMeta, probes: Snapshot
 interface WaitRunMeta {
   name: string;
   tmuxSession: string;
+  tmuxSocketPath?: string;
   backend: string;
 }
 
@@ -137,9 +139,6 @@ export async function waitCommand(options: WaitOptions): Promise<WaitResult> {
   validateWaitTiming(idleMs, timeoutMs, pollIntervalMs);
 
   const loadRun = options.loadRun ?? loadRunMeta;
-  const hasSession = options.hasSession ?? hasTmuxSession;
-  const capturePane = options.capturePane ?? captureTmuxPane;
-  const paneActivity = options.paneActivity ?? ((session: string) => probePaneActivity(session));
   const sleep = options.sleep ?? delay;
   const now = options.now ?? Date.now;
   const appendSettled = options.appendSettled ?? appendWaitSettled;
@@ -147,6 +146,10 @@ export async function waitCommand(options: WaitOptions): Promise<WaitResult> {
     options.readTurnInputAt ?? (async (name: string) => (await readBackendSignalObservation(name)).lastTurnInputAt);
   const startedAt = now();
   const meta = await loadRun(options.name);
+  const runner = socketBoundRunner(meta.tmuxSocketPath);
+  const hasSession = options.hasSession ?? ((session: string) => hasTmuxSession(session, runner));
+  const capturePane = options.capturePane ?? ((session: string, tail: number) => captureTmuxPane(session, tail, runner));
+  const paneActivity = options.paneActivity ?? ((session: string) => probePaneActivity(session, { runner }));
   let previousHash: string | undefined;
   let idleAccumulatedMs = 0;
   let lastSampleAt = startedAt;

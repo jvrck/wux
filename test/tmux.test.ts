@@ -1,6 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import type { ProcessResult } from "../src/runtime/process";
-import { paneForegroundActivity } from "../src/runtime/tmux";
+import { discoverSocketPath, paneForegroundActivity, socketBoundRunner } from "../src/runtime/tmux";
+
+test("centralizes exact socket qualification and discovery", async () => {
+  const calls: string[][] = [];
+  const runner = socketBoundRunner("/tmp/wux.socket", async (args) => {
+    calls.push(args);
+    return { code: 0, stdout: "/tmp/wux.socket\n", stderr: "" };
+  });
+  expect(await discoverSocketPath("wux_bound", runner)).toBe("/tmp/wux.socket");
+  expect(calls).toEqual([["tmux", "-S", "/tmp/wux.socket", "display-message", "-p", "-t", "=wux_bound", "-F", "#{socket_path}"]]);
+});
 
 // The probe reads pid and current command in two separate `display-message`
 // calls (no in-band separator) so it is robust to tmux escaping non-printable

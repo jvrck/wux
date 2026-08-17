@@ -94,7 +94,16 @@ wux run codex  --name codex-smoke  --cwd "$PWD"
 wux run shell  --name smoke-json   --cwd "$PWD" --json
 ```
 
-A run creates a tmux session, metadata, an append-only pane log, and a JSONL event stream under `$XDG_STATE_HOME/wux/runs/<run-name>/` (or `~/.local/state/wux/runs/<run-name>/`). Internal tmux session names use `wux_<run-name>` because tmux treats `:` as target syntax.
+A run creates a tmux session, metadata, an append-only pane log, and a JSONL event stream under `$XDG_STATE_HOME/wux/runs/<run-name>/` (or `~/.local/state/wux/runs/<run-name>/`). Internal tmux session names use `wux_<run-name>` because tmux treats `:` as target syntax. New metadata also records tmux's exact creating socket path. Later Wux operations use that path automatically, so runs created through distinct tmux servers remain reachable without recreating the launch environment. Older metadata without a socket retains the prior ambient-server behavior.
+
+For an intentionally isolated tmux server, point `TMUX_TMPDIR` at a private parent directory when creating the run; no extra Wux flag is needed:
+
+```bash
+mkdir -p /tmp/wux-isolated-tmux
+env -u TMUX TMUX_TMPDIR=/tmp/wux-isolated-tmux wux run shell --name isolated --cwd "$PWD"
+# This works from a neutral process because Wux stored the exact socket.
+env -u TMUX -u TMUX_TMPDIR wux read isolated
+```
 
 All three backends share the same lifecycle, metadata, logging, send/read, attach, stop, and handoff mechanics. `shell` uses `$SHELL`; `claude` and `codex` must be available on `PATH`, and their login/approval prompts remain visible through `read` and `attach`.
 
@@ -320,7 +329,7 @@ wux mark smoke blocked
 wux attach smoke
 ```
 
-`attach` resolves the run metadata, verifies the tmux session is still live, appends an attach event, and hands the terminal to tmux. From a normal terminal it runs `tmux attach-session -t =wux_<run-name>`; from inside tmux it runs `tmux switch-client -t =wux_<run-name>` so nested tmux attach is avoided. Attach does not send input, change status, or inspect backend output.
+`attach` resolves the run metadata, verifies the tmux session is still live, appends an attach event, and hands the terminal to tmux through the persisted socket. From a normal terminal it runs a socket-qualified attach. From a client on that same server it uses socket-qualified `switch-client` so nested tmux attach is avoided. If invoked inside a different tmux server, it returns an actionable error rather than switching or attaching to the wrong server; run it from outside tmux instead. Legacy metadata without a stored socket retains the ambient behavior.
 
 ### Scrolling back through earlier output
 

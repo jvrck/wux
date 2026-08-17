@@ -2,7 +2,7 @@ import { createInterface } from "node:readline/promises";
 import { WuxError } from "../runtime/errors";
 import { currentOwner } from "../runtime/owner";
 import { finalizeStopped, loadRun, type RunMeta } from "../runtime/runs";
-import { hasSession, killSession } from "../runtime/tmux";
+import { hasSession, killSession, socketBoundRunner } from "../runtime/tmux";
 
 export type StopConfirm = (meta: RunMeta) => Promise<boolean>;
 
@@ -33,7 +33,8 @@ export async function stopRun(options: StopOptions): Promise<RunMeta> {
   // Session-agnostic: if the tmux session is already gone (it died, or was killed
   // externally), `stop` is still the one verb that tears the run down. Finalize to
   // `stopped` rather than erroring — the run is already in the desired liveness.
-  if (!(await hasSession(meta.tmuxSession))) {
+  const runner = socketBoundRunner(meta.tmuxSocketPath);
+  if (!(await hasSession(meta.tmuxSession, runner))) {
     return finalizeStopped(meta, by);
   }
 
@@ -46,7 +47,7 @@ export async function stopRun(options: StopOptions): Promise<RunMeta> {
     if (!confirmed) throw new WuxError("stop cancelled");
   }
 
-  await killSession(meta.tmuxSession);
+  await killSession(meta.tmuxSession, runner);
   return finalizeStopped(meta, by);
 }
 

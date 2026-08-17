@@ -13,7 +13,7 @@ export async function attachRun(options: AttachOptions): Promise<void> {
   if (!options.name) throw new WuxError("attach requires <run-name>");
   const meta = await requireLiveRun(options.name);
   await appendEvent(meta.name, { type: "attach" });
-  await attachSession({ session: meta.tmuxSession, env: options.env, runner: options.runner });
+  await attachSession({ session: meta.tmuxSession, socketPath: meta.tmuxSocketPath, env: options.env, runner: options.runner });
 }
 
 export async function attachCommand(name: string): Promise<void> {

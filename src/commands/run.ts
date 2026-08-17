@@ -6,7 +6,7 @@ import { appendEvent } from "../runtime/events";
 import { WuxError } from "../runtime/errors";
 import { createRunMeta, saveRun, type RunBackend } from "../runtime/runs";
 import { runDir, runsRoot } from "../runtime/state";
-import { createSession, hasSession, killSession } from "../runtime/tmux";
+import { createSession, discoverSocketPath, hasSession, killSession } from "../runtime/tmux";
 
 export type { RunBackend } from "../runtime/runs";
 
@@ -55,7 +55,8 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
     await touch(join(dir, "events.jsonl"));
     await createSession({ session: meta.tmuxSession, cwd: meta.cwd, command, logPath: paneLog, env: options.env });
     sessionCreated = true;
-    await saveRun(meta);
+    const tmuxSocketPath = await discoverSocketPath(meta.tmuxSession);
+    await saveRun({ ...meta, tmuxSocketPath });
     await appendEvent(meta.name, { type: "create", backend: meta.backend, owner: meta.owner });
   } catch (error) {
     if (sessionCreated && (await hasSession(meta.tmuxSession))) {

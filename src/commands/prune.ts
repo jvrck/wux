@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { WuxError } from "../runtime/errors";
 import type { RunMeta, RunStatus } from "../runtime/runs";
 import { runsRoot } from "../runtime/state";
-import { hasSession, tmuxSessionName } from "../runtime/tmux";
+import { hasSession, socketBoundRunner, tmuxSessionName } from "../runtime/tmux";
 
 export interface PruneOptions {
   days?: number;
@@ -117,7 +117,7 @@ async function decideRun(name: string, dir: string, cutoffMs: number, selectAll:
   const meta = await loadMeta(dir);
   if (!meta) return { name, action: "skipped", reason: "missing or invalid metadata" };
 
-  if (await hasSession(meta.tmuxSession ?? tmuxSessionName(name))) {
+  if (await hasSession(meta.tmuxSession ?? tmuxSessionName(name), socketBoundRunner(meta.tmuxSocketPath))) {
     return { name, action: "skipped", reason: "live tmux session" };
   }
 

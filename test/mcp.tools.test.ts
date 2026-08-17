@@ -254,7 +254,10 @@ describe("mcp tools — full local loop (open → list → send → read → int
 
       // view (observation; watch instructions + lastInput)
       const view = await call(harness.client, "view", { name });
-      expect(view.structured.tmuxTarget).toBe(`=wux_${name}:`);
+      expect(typeof view.structured.tmuxSocketPath).toBe("string");
+      expect(view.structured.tmuxTarget).toBe(
+        `-S ${JSON.stringify(view.structured.tmuxSocketPath)} attach-session -t =wux_${name}`,
+      );
       expect(view.structured.attachCommand).toBe(`wux attach ${name}`);
       expect(typeof view.structured.paneLogPath).toBe("string");
       expect(view.structured.lastInputBy).toBe("mcp:wux-tools-test");
