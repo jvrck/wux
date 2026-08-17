@@ -43,6 +43,25 @@ signals unless the policy changes.
   notifies maintainers, but they do not block any merge. Track scheduled
   findings in a GitHub issue.
 
+## Dependabot Remediation
+
+Dependabot provides weekly Bun version maintenance for routine eligible minor
+and patch updates. GitHub currently supports Bun version updates, but not
+Dependabot security-update PRs for the `bun` ecosystem.
+
+Dependabot also provides weekly GitHub Actions version maintenance and GitHub
+Actions security updates when GitHub identifies an eligible fix. Those security
+updates are not held for the routine schedule and may cross a major version
+boundary. `.github/dependabot.yml` creates at most one grouped routine PR per
+ecosystem each Monday in `Australia/Sydney`; routine major upgrades remain
+deliberate human work.
+
+OSV-Scanner and Trivy remain the Bun vulnerability detection and gating path.
+When they identify a Bun vulnerability, a maintainer deliberately updates the
+Bun dependency and lockfile, runs the existing gates, and lands the repair
+through ordinary reviewed work. Vulnerability alerts and automated security
+fixes cannot add Bun security-update support.
+
 ## Release SBOM
 
 The tag-triggered release workflow generates `sbom.cdx.json` with Trivy, includes

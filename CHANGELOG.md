@@ -16,6 +16,13 @@ intentionally not reproduced here.
   routing correctly across simultaneous tmux servers; legacy run metadata keeps
   its ambient-server fallback.
 
+### Security
+
+- Add weekly grouped routine minor/patch Dependabot version maintenance for Bun
+  and GitHub Actions, plus supported immediate GitHub Actions security updates;
+  OSV-Scanner and Trivy continue to detect Bun vulnerabilities for deliberate
+  maintainer remediation through ordinary reviewed work.
+
 ## 2026.08.04
 
 ### Security
