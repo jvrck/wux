@@ -45,16 +45,22 @@ signals unless the policy changes.
 
 ## Dependabot Remediation
 
-Dependabot complements the OSV-Scanner and Trivy detection gates with a repair
-path. Vulnerability alerts and automated security updates can open a security
-PR as soon as GitHub identifies an eligible fix; security remediation is not
-held for the routine schedule, including when the available fix is a major
-version update.
+Dependabot provides weekly Bun version maintenance for routine eligible minor
+and patch updates. GitHub currently supports Bun version updates, but not
+Dependabot security-update PRs for the `bun` ecosystem.
 
-Separately, `.github/dependabot.yml` can create at most one grouped routine PR
-per ecosystem each Monday in `Australia/Sydney` when eligible updates exist.
-Each routine PR groups minor and patch updates for its ecosystem. Routine major
-upgrades are excluded and remain deliberate human work.
+Dependabot also provides weekly GitHub Actions version maintenance and GitHub
+Actions security updates when GitHub identifies an eligible fix. Those security
+updates are not held for the routine schedule and may cross a major version
+boundary. `.github/dependabot.yml` creates at most one grouped routine PR per
+ecosystem each Monday in `Australia/Sydney`; routine major upgrades remain
+deliberate human work.
+
+OSV-Scanner and Trivy remain the Bun vulnerability detection and gating path.
+When they identify a Bun vulnerability, a maintainer deliberately updates the
+Bun dependency and lockfile, runs the existing gates, and lands the repair
+through ordinary reviewed work. Vulnerability alerts and automated security
+fixes cannot add Bun security-update support.
 
 ## Release SBOM
 

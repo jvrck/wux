@@ -18,8 +18,10 @@ intentionally not reproduced here.
 
 ### Security
 
-- Add Dependabot remediation for Bun dependencies and GitHub Actions, with
-  immediate security-update PRs and weekly grouped routine minor/patch updates.
+- Add weekly grouped routine minor/patch Dependabot version maintenance for Bun
+  and GitHub Actions, plus supported immediate GitHub Actions security updates;
+  OSV-Scanner and Trivy continue to detect Bun vulnerabilities for deliberate
+  maintainer remediation through ordinary reviewed work.
 
 ## 2026.08.04
 
