@@ -10,6 +10,8 @@ intentionally not reproduced here.
 
 ## Unreleased
 
+## 2026.08.17
+
 ### Fixed
 
 - Bind new runs to their exact creating tmux socket so lifecycle commands keep
