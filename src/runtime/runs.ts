@@ -4,7 +4,7 @@ import { WuxError } from "./errors";
 import { appendEvent } from "./events";
 import { currentOwner } from "./owner";
 import { runDir, runsRoot } from "./state";
-import { hasSession, tmuxSessionName } from "./tmux";
+import { connectionForMeta, probeSession, tmuxSessionName, unavailableTmuxMessage } from "./tmux";
 
 export type RunBackend = "shell" | "claude" | "codex";
 export type RunStatus = "running" | "waiting" | "blocked" | "stopped";
@@ -14,6 +14,8 @@ export interface RunMeta {
   name: string;
   backend: RunBackend;
   tmuxSession: string;
+  // Present for every run created by current Wux. Omitted only by legacy state.
+  tmuxSocketPath?: string;
   cwd: string;
   owner: string;
   createdAt: string;
@@ -66,6 +68,7 @@ export async function createRunMeta(input: {
 
 export async function saveRun(meta: RunMeta): Promise<void> {
   validateRunName(meta.name);
+  connectionForMeta(meta);
   const dir = runDir(meta.name);
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, "meta.json"), `${JSON.stringify(meta, null, 2)}
@@ -76,7 +79,9 @@ export async function loadRun(name: string): Promise<RunMeta> {
   validateRunName(name);
   try {
     const raw = await readFile(join(runDir(name), "meta.json"), "utf8");
-    return JSON.parse(raw) as RunMeta;
+    const meta = JSON.parse(raw) as RunMeta;
+    connectionForMeta(meta);
+    return meta;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       throw new WuxError(`run not found: ${name}`);
@@ -110,11 +115,15 @@ export async function listRuns(): Promise<RunMeta[]> {
 
 export async function markRun(name: string, status: MarkStatus): Promise<RunMeta> {
   const meta = await loadRun(name);
-  const live = await hasSession(meta.tmuxSession);
-  if (status === "stopped" && live) {
+  const connection = connectionForMeta(meta);
+  const probe = await probeSession(meta.tmuxSession, connection);
+  if (probe.state === "unavailable") {
+    throw new WuxError(`${unavailableTmuxMessage(connection, probe.detail)} for ${name}`);
+  }
+  if (status === "stopped" && probe.state === "live") {
     throw new WuxError(`tmux session is still running for ${name}: ${meta.tmuxSession}`);
   }
-  if (status !== "stopped" && !live) {
+  if (status !== "stopped" && probe.state !== "live") {
     throw new WuxError(`tmux session is not running for ${name}: ${meta.tmuxSession}`);
   }
   const next = { ...meta, status, updatedAt: new Date().toISOString() };
@@ -153,7 +162,12 @@ export async function requireLiveRun(name: string): Promise<RunMeta> {
   if (meta.status === "stopped") {
     throw new WuxError(`run is stopped: ${name}`);
   }
-  if (!(await hasSession(meta.tmuxSession))) {
+  const connection = connectionForMeta(meta);
+  const probe = await probeSession(meta.tmuxSession, connection);
+  if (probe.state === "unavailable") {
+    throw new WuxError(`${unavailableTmuxMessage(connection, probe.detail)} for ${name}`);
+  }
+  if (probe.state !== "live") {
     throw new WuxError(`tmux session is not running for ${name}: ${meta.tmuxSession}`);
   }
   return meta;

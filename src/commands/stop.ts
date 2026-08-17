@@ -2,7 +2,7 @@ import { createInterface } from "node:readline/promises";
 import { WuxError } from "../runtime/errors";
 import { currentOwner } from "../runtime/owner";
 import { finalizeStopped, loadRun, type RunMeta } from "../runtime/runs";
-import { hasSession, killSession } from "../runtime/tmux";
+import { connectionForMeta, killSession, probeSession, unavailableTmuxMessage } from "../runtime/tmux";
 
 export type StopConfirm = (meta: RunMeta) => Promise<boolean>;
 
@@ -33,7 +33,12 @@ export async function stopRun(options: StopOptions): Promise<RunMeta> {
   // Session-agnostic: if the tmux session is already gone (it died, or was killed
   // externally), `stop` is still the one verb that tears the run down. Finalize to
   // `stopped` rather than erroring — the run is already in the desired liveness.
-  if (!(await hasSession(meta.tmuxSession))) {
+  const connection = connectionForMeta(meta);
+  const probe = await probeSession(meta.tmuxSession, connection);
+  if (probe.state === "unavailable") {
+    throw new WuxError(`${unavailableTmuxMessage(connection, probe.detail)} for ${meta.name}; stop was not finalized`);
+  }
+  if (probe.state === "absent") {
     return finalizeStopped(meta, by);
   }
 
@@ -46,7 +51,7 @@ export async function stopRun(options: StopOptions): Promise<RunMeta> {
     if (!confirmed) throw new WuxError("stop cancelled");
   }
 
-  await killSession(meta.tmuxSession);
+  await killSession(meta.tmuxSession, connection);
   return finalizeStopped(meta, by);
 }
 

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { WuxError } from "../runtime/errors";
 import type { RunMeta, RunStatus } from "../runtime/runs";
 import { runsRoot } from "../runtime/state";
-import { hasSession, tmuxSessionName } from "../runtime/tmux";
+import { connectionForMeta, probeSession, tmuxSessionName } from "../runtime/tmux";
 
 export interface PruneOptions {
   days?: number;
@@ -117,8 +117,19 @@ async function decideRun(name: string, dir: string, cutoffMs: number, selectAll:
   const meta = await loadMeta(dir);
   if (!meta) return { name, action: "skipped", reason: "missing or invalid metadata" };
 
-  if (await hasSession(meta.tmuxSession ?? tmuxSessionName(name))) {
+  let connection;
+  try {
+    connection = connectionForMeta(meta);
+  } catch (error) {
+    if (error instanceof WuxError) return { name, action: "skipped", reason: "missing or invalid metadata" };
+    throw error;
+  }
+  const probe = await probeSession(meta.tmuxSession ?? tmuxSessionName(name), connection);
+  if (probe.state === "live") {
     return { name, action: "skipped", reason: "live tmux session" };
+  }
+  if (probe.state === "unavailable") {
+    return { name, action: "skipped", reason: "tmux server unavailable" };
   }
 
   if (!meta.status || ACTIVE_STATUSES.has(meta.status)) {

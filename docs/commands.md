@@ -94,7 +94,16 @@ wux run codex  --name codex-smoke  --cwd "$PWD"
 wux run shell  --name smoke-json   --cwd "$PWD" --json
 ```
 
-A run creates a tmux session, metadata, an append-only pane log, and a JSONL event stream under `$XDG_STATE_HOME/wux/runs/<run-name>/` (or `~/.local/state/wux/runs/<run-name>/`). Internal tmux session names use `wux_<run-name>` because tmux treats `:` as target syntax.
+A run creates a tmux session, metadata, an append-only pane log, and a JSONL event stream under `$XDG_STATE_HOME/wux/runs/<run-name>/` (or `~/.local/state/wux/runs/<run-name>/`). Internal tmux session names use `wux_<run-name>` because tmux treats `:` as target syntax. New metadata also records tmux's exact creating socket path before the create event is committed. If that authoritative discovery fails, Wux kills only the just-created exact session through the creating connection and removes the partial run state. Later Wux operations use the stored path automatically, so runs created through distinct tmux servers remain reachable without recreating the launch environment. Older metadata with no socket field retains the prior ambient-server behavior; a present empty, relative, or non-string socket value is invalid metadata and never becomes ambient fallback.
+
+For an intentionally isolated tmux server, point `TMUX_TMPDIR` at a private parent directory when creating the run; no extra Wux flag is needed:
+
+```bash
+mkdir -p /tmp/wux-isolated-tmux
+env -u TMUX TMUX_TMPDIR=/tmp/wux-isolated-tmux wux run shell --name isolated --cwd "$PWD"
+# This works from a neutral process because Wux stored the exact socket.
+env -u TMUX -u TMUX_TMPDIR wux read isolated
+```
 
 All three backends share the same lifecycle, metadata, logging, send/read, attach, stop, and handoff mechanics. `shell` uses `$SHELL`; `claude` and `codex` must be available on `PATH`, and their login/approval prompts remain visible through `read` and `attach`.
 
@@ -320,7 +329,7 @@ wux mark smoke blocked
 wux attach smoke
 ```
 
-`attach` resolves the run metadata, verifies the tmux session is still live, appends an attach event, and hands the terminal to tmux. From a normal terminal it runs `tmux attach-session -t =wux_<run-name>`; from inside tmux it runs `tmux switch-client -t =wux_<run-name>` so nested tmux attach is avoided. Attach does not send input, change status, or inspect backend output.
+`attach` resolves the run metadata, verifies the tmux session is still live, appends an attach event, and hands the terminal to tmux through the persisted socket. From a normal terminal it runs a socket-qualified attach. From a client on that same server it uses socket-qualified `switch-client` so nested tmux attach is avoided. If invoked inside a different tmux server, or when the current `TMUX` value cannot identify its server, it returns an actionable error naming the stored and current values rather than switching or attaching to the wrong server; run it from outside tmux instead. Legacy metadata without a stored socket branches before that comparison and retains ambient attach/switch behavior.
 
 ### Scrolling back through earlier output
 
@@ -347,7 +356,7 @@ wux stop smoke
 wux stop smoke --yes
 ```
 
-`stop` resolves run metadata and is idempotent and session-agnostic: it is the one verb that tears a run down regardless of liveness. If the tmux session is still live, it asks for confirmation unless `--yes` is present, kills the session, records `status: "stopped"` plus `stoppedAt`, and appends a stop event. If the tmux session is already gone (it died, or was killed externally), `stop` finalizes the run to `stopped` and succeeds instead of erroring — no destructive action remains, so no confirmation is required on that path. A `stop` on an already-`stopped` run is a no-op success that leaves metadata and events untouched. Non-interactive callers stopping a live run must pass `--yes`. It does not delete run directories or prune logs.
+`stop` resolves run metadata and is idempotent and session-agnostic: it is the one verb that tears a run down regardless of liveness. If the tmux session is still live, it asks for confirmation unless `--yes` is present, kills the session, records `status: "stopped"` plus `stoppedAt`, and appends a stop event. If the session or whole socket server is definitively gone (tmux reports no session/server), `stop` finalizes the run to `stopped` and succeeds instead of erroring — no destructive action remains, so no confirmation is required on that path. An indeterminate stored-socket error, such as a permission or transport failure, is not definitive absence: `stop` reports the socket error and leaves metadata active rather than silently finalizing or trying the ambient server. A `stop` on an already-`stopped` run is a no-op success that leaves metadata and events untouched. Non-interactive callers stopping a live run must pass `--yes`. It does not delete run directories or prune logs.
 
 ## Handoff
 

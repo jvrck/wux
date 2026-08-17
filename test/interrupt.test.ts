@@ -6,7 +6,7 @@ import { runCommand } from "../src/commands/run";
 import { sendCommand } from "../src/commands/send";
 import type { ProcessResult } from "../src/runtime/process";
 import { loadRun, saveRun } from "../src/runtime/runs";
-import { interruptSession } from "../src/runtime/tmux";
+import { ambientTmuxConnection, interruptSession } from "../src/runtime/tmux";
 import { hasTmux, killTmux, tempState } from "./helpers";
 
 function uniqueRunName(prefix: string): string {
@@ -20,16 +20,16 @@ function wait(ms: number): Promise<void> {
 describe("interruptSession", () => {
   test("sends exactly one C-c as a key name (no -l)", async () => {
     const calls: string[][] = [];
-    await interruptSession("wux_x", async (args): Promise<ProcessResult> => {
+    await interruptSession("wux_x", ambientTmuxConnection({ runner: async (args): Promise<ProcessResult> => {
       calls.push(args);
       return { code: 0, stdout: "", stderr: "" };
-    });
+    } }));
     expect(calls).toEqual([["tmux", "send-keys", "-t", "=wux_x:", "C-c"]]);
   });
 
   test("throws a WuxError when the tmux command fails", async () => {
     await expect(
-      interruptSession("wux_x", async (): Promise<ProcessResult> => ({ code: 1, stdout: "", stderr: "boom" })),
+      interruptSession("wux_x", ambientTmuxConnection({ runner: async (): Promise<ProcessResult> => ({ code: 1, stdout: "", stderr: "boom" }) })),
     ).rejects.toThrow("interrupt");
   });
 });

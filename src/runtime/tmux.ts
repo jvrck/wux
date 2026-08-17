@@ -1,11 +1,80 @@
 import { mkdir, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { WuxError } from "./errors";
 import { withLock } from "./lock";
 import { processCommandName, runInteractiveProcess, runProcess, type ProcessResult } from "./process";
 import { stateRoot } from "./state";
 
 export type TmuxRunner = (args: string[]) => Promise<ProcessResult>;
+
+export interface TmuxConnection {
+  executable: string;
+  socketPath?: string;
+  env?: NodeJS.ProcessEnv;
+  runner: TmuxRunner;
+}
+
+export interface TmuxConnectionOptions {
+  executable?: string;
+  env?: NodeJS.ProcessEnv;
+  runner?: TmuxRunner;
+}
+
+interface SocketMetadata {
+  tmuxSocketPath?: unknown;
+}
+
+export type TmuxSessionState = "live" | "absent" | "unavailable";
+
+export interface TmuxSessionProbe {
+  state: TmuxSessionState;
+  detail?: string;
+}
+
+// A connection owns tmux executable selection, environment, process execution,
+// and optional exact socket placement. Callers supply tmux subcommands only.
+export function ambientTmuxConnection(options: TmuxConnectionOptions = {}): TmuxConnection {
+  return makeTmuxConnection(undefined, options);
+}
+
+export function socketTmuxConnection(socketPath: string, options: TmuxConnectionOptions = {}): TmuxConnection {
+  validateSocketPath(socketPath);
+  return makeTmuxConnection(socketPath, options);
+}
+
+export function connectionForMeta(meta: SocketMetadata, options: TmuxConnectionOptions = {}): TmuxConnection {
+  if (!Object.hasOwn(meta, "tmuxSocketPath")) return ambientTmuxConnection(options);
+  if (typeof meta.tmuxSocketPath !== "string") {
+    throw new WuxError("invalid tmuxSocketPath in run metadata: expected an absolute socket path");
+  }
+  return socketTmuxConnection(meta.tmuxSocketPath, options);
+}
+
+export function tmuxArgv(connection: TmuxConnection, subcommand: string[]): string[] {
+  return [
+    connection.executable,
+    ...(connection.socketPath !== undefined ? ["-S", connection.socketPath] : []),
+    ...subcommand,
+  ];
+}
+
+export async function runTmux(connection: TmuxConnection, subcommand: string[]): Promise<ProcessResult> {
+  return connection.runner(tmuxArgv(connection, subcommand));
+}
+
+function makeTmuxConnection(socketPath: string | undefined, options: TmuxConnectionOptions): TmuxConnection {
+  const executable = options.executable ?? "tmux";
+  if (executable.length === 0) throw new WuxError("invalid tmux executable: expected a non-empty path or command");
+  const env = options.env;
+  const runner = options.runner ?? ((args: string[]) => runProcess(args, { env }));
+  return { executable, ...(socketPath !== undefined ? { socketPath } : {}), ...(env !== undefined ? { env } : {}), runner };
+}
+
+function validateSocketPath(socketPath: string): void {
+  if (socketPath.length === 0 || !isAbsolute(socketPath) || socketPath.includes("\0")) {
+    throw new WuxError("invalid tmuxSocketPath in run metadata: expected an absolute socket path");
+  }
+}
 
 // Generous in-memory scrollback so a human who attaches a wux session can read
 // back long agent turns in copy-mode. tmux's 2000-line default loses the oldest
@@ -19,11 +88,11 @@ const WUX_HISTORY_LIMIT = "50000";
 // limit directly. See createSession for the full timing rationale.
 const WUX_TMUX_CONF_NAME = "tmux.conf";
 // Cross-process lock guarding the brief window where createSession mutates the
-// SHARED global tmux history-limit. All `wux run`s point at one tmux server, and
-// wux is driven by workers that launch many runs at once; without this the
+// SHARED global tmux history-limit on each selected server. Wux is driven by
+// workers that launch many runs at once; without this the
 // read→elevate→create→restore of the single global races (operator's global left
-// elevated, or a pane created before its elevation lands). Lives under the state
-// root, next to the conf. See createSession.
+// elevated, or a pane created before its elevation lands). The state-root lock
+// safely over-serializes creation across distinct sockets. See createSession.
 const WUX_GLOBAL_LOCK_NAME = "global-history-limit.lock";
 // Opt-in env flag for tmux mouse mode. Off by default because `mouse on` changes
 // native terminal click-drag selection (copy then needs Shift/Option), which
@@ -35,16 +104,43 @@ export function tmuxSessionName(runName: string): string {
   return `wux_${runName}`;
 }
 
-export async function requireTmux(runner: TmuxRunner = runProcess): Promise<void> {
-  const result = await runner(["tmux", "-V"]);
+export async function requireTmux(connection: TmuxConnection = ambientTmuxConnection()): Promise<void> {
+  const result = await runTmux(connection, ["-V"]);
   if (result.code !== 0) {
     throw new WuxError(`tmux is required but was not found: ${result.stderr || result.stdout}`.trim());
   }
 }
 
-export async function hasSession(session: string): Promise<boolean> {
-  const result = await runProcess(["tmux", "has-session", "-t", exactTarget(session)]);
-  return result.code === 0;
+export async function probeSession(session: string, connection: TmuxConnection = ambientTmuxConnection()): Promise<TmuxSessionProbe> {
+  const result = await runTmux(connection, ["has-session", "-t", exactTarget(session)]);
+  if (result.code === 0) return { state: "live" };
+  const detail = (result.stderr || result.stdout).trim();
+  const definitivelyAbsent = /can't find session|no server running on|no such file or directory|connection refused/i.test(detail);
+  if (connection.socketPath !== undefined && !definitivelyAbsent) {
+    return { state: "unavailable", ...(detail.length > 0 ? { detail } : {}) };
+  }
+  return { state: "absent", ...(detail.length > 0 ? { detail } : {}) };
+}
+
+export async function hasSession(session: string, connection: TmuxConnection = ambientTmuxConnection()): Promise<boolean> {
+  return (await probeSession(session, connection)).state === "live";
+}
+
+export function unavailableTmuxMessage(connection: TmuxConnection, detail?: string): string {
+  const target = connection.socketPath !== undefined ? ` at ${connection.socketPath}` : "";
+  const suffix = detail && detail.length > 0 ? `: ${detail}` : "";
+  return `tmux server is unavailable${target}${suffix}`;
+}
+
+// Ask the server that created the session.  This is authoritative for both the
+// default server and an isolated TMUX_TMPDIR server; never persist the parent dir.
+export async function discoverSocketPath(session: string, connection: TmuxConnection = ambientTmuxConnection()): Promise<string> {
+  const result = await runTmux(connection, ["display-message", "-p", "-t", exactPaneTarget(session), "-F", "#{socket_path}"]);
+  const socketPath = result.stdout.trim();
+  if (result.code !== 0 || socketPath.length === 0 || !isAbsolute(socketPath)) {
+    throw new WuxError(`failed to discover tmux socket for ${session}: ${result.stderr || result.stdout}`.trim());
+  }
+  return socketPath;
 }
 
 function exactTarget(session: string): string {
@@ -88,8 +184,8 @@ async function ensureWuxTmuxConf(env: NodeJS.ProcessEnv): Promise<string> {
 
 // The operator's current global history-limit, so we can put it back exactly.
 // Undefined when it cannot be read (no server yet / unexpected failure).
-async function readGlobalHistoryLimit(runner: TmuxRunner): Promise<string | undefined> {
-  const result = await runner(["tmux", "show-options", "-gv", "history-limit"]);
+async function readGlobalHistoryLimit(connection: TmuxConnection): Promise<string | undefined> {
+  const result = await runTmux(connection, ["show-options", "-gv", "history-limit"]);
   if (result.code !== 0) return undefined;
   const value = result.stdout.trim();
   return value.length > 0 ? value : undefined;
@@ -97,19 +193,19 @@ async function readGlobalHistoryLimit(runner: TmuxRunner): Promise<string | unde
 
 // Restore the operator's global history-limit: re-set a captured value, or unset
 // (-u) back to tmux's compiled default when there was no baseline to capture.
-async function restoreGlobalHistoryLimit(previous: string | undefined, runner: TmuxRunner): Promise<void> {
+async function restoreGlobalHistoryLimit(previous: string | undefined, connection: TmuxConnection): Promise<void> {
   if (previous === undefined) {
-    await runner(["tmux", "set-option", "-gu", "history-limit"]);
+    await runTmux(connection, ["set-option", "-gu", "history-limit"]);
   } else {
-    await runner(["tmux", "set-option", "-g", "history-limit", previous]);
+    await runTmux(connection, ["set-option", "-g", "history-limit", previous]);
   }
 }
 
 // Set a session-scoped tmux option. Uses the exact-match `=<session>:` target
 // form: `set-option`/`show-options` reject the bare `=<session>` form that
 // has-session accepts, and the colon form stays exact-match (no prefix bleed).
-async function setSessionOption(session: string, name: string, value: string, runner: TmuxRunner): Promise<void> {
-  const result = await runner(["tmux", "set-option", "-t", exactPaneTarget(session), name, value]);
+async function setSessionOption(session: string, name: string, value: string, connection: TmuxConnection): Promise<void> {
+  const result = await runTmux(connection, ["set-option", "-t", exactPaneTarget(session), name, value]);
   if (result.code !== 0) {
     throw new WuxError(`failed to set ${name} on ${session}: ${result.stderr || result.stdout}`.trim());
   }
@@ -121,10 +217,12 @@ export async function createSession(options: {
   command: string[];
   logPath: string;
   env?: NodeJS.ProcessEnv;
+  connection?: TmuxConnection;
+  // Backward-compatible test injection; production callers pass `connection`.
   runner?: TmuxRunner;
 }): Promise<void> {
   const env = options.env ?? process.env;
-  const runner = options.runner ?? runProcess;
+  const connection = options.connection ?? ambientTmuxConnection({ env, runner: options.runner });
 
   try {
     const cwdStat = await stat(options.cwd);
@@ -134,7 +232,7 @@ export async function createSession(options: {
     throw new WuxError(`cwd does not exist: ${options.cwd}`);
   }
 
-  await requireTmux(runner);
+  await requireTmux(connection);
 
   // Make wux sessions human-scrollable on attach. tmux fixes a pane's scrollback
   // buffer when the pane is created and reads a `-f` config only at server start,
@@ -145,8 +243,9 @@ export async function createSession(options: {
   // limit at session scope so it survives the restore, is readable via
   // `show-options -t <session>`, and applies to any later panes/windows.
   //
-  // The global is a SINGLE shared value on the one tmux server, so concurrent
-  // `wux run`s would otherwise race this read-elevate-create-restore: one run can
+  // The global is a SINGLE shared value on the selected tmux server, so
+  // concurrent `wux run`s on that server would otherwise race this
+  // read-elevate-create-restore: one run can
   // read another's elevated 50000 as its "baseline" (leaving the operator's
   // global stuck at 50000), or restore the default before another's new-session
   // lands (creating that pane at the un-elevated limit). Hold a cross-process lock
@@ -154,36 +253,50 @@ export async function createSession(options: {
   // is atomic between runs. Everything that does NOT touch the global (session
   // pin, mouse, pipe-pane) stays OUTSIDE the lock to keep the held window tiny.
   const conf = await ensureWuxTmuxConf(env);
-  const create = await withLock(wuxGlobalLockPath(env), async () => {
-    const previousGlobal = await readGlobalHistoryLimit(runner);
-    const elevate = await runner(["tmux", "set-option", "-g", "history-limit", WUX_HISTORY_LIMIT]);
-    // Surface a failed elevation only when a tmux server is already running
-    // (previousGlobal was readable). With NO server yet, the elevation can't
-    // apply and is not needed: new-session below starts the server, which reads
-    // the wux `-f conf` and gives the first pane the generous history-limit.
-    // (Throwing unconditionally broke the first `wux run` on a serverless host.)
-    if (elevate.code !== 0 && previousGlobal !== undefined) {
-      throw new WuxError(`failed to elevate tmux history-limit: ${elevate.stderr || elevate.stdout}`.trim());
+  let sessionCreated = false;
+  let create: ProcessResult;
+  try {
+    create = await withLock(wuxGlobalLockPath(env), async () => {
+      const previousGlobal = await readGlobalHistoryLimit(connection);
+      const elevate = await runTmux(connection, ["set-option", "-g", "history-limit", WUX_HISTORY_LIMIT]);
+      // Surface a failed elevation only when a tmux server is already running
+      // (previousGlobal was readable). With NO server yet, the elevation can't
+      // apply and is not needed: new-session below starts the server, which reads
+      // the wux `-f conf` and gives the first pane the generous history-limit.
+      // (Throwing unconditionally broke the first `wux run` on a serverless host.)
+      if (elevate.code !== 0 && previousGlobal !== undefined) {
+        throw new WuxError(`failed to elevate tmux history-limit: ${elevate.stderr || elevate.stdout}`.trim());
+      }
+      try {
+        const result = await runTmux(connection, [
+          "-f",
+          conf,
+          "new-session",
+          "-d",
+          "-s",
+          options.session,
+          "-c",
+          options.cwd,
+          ...options.command,
+        ]);
+        sessionCreated = result.code === 0;
+        return result;
+      } finally {
+        // Restore inside the lock so the operator's global is back to baseline
+        // before any other run reads it; the lock's own finally then frees it.
+        await restoreGlobalHistoryLimit(previousGlobal, connection);
+      }
+    });
+  } catch (error) {
+    if (sessionCreated) {
+      try {
+        await killSession(options.session, connection);
+      } catch (rollbackError) {
+        throw new WuxError(`${errorText(error)}; rollback failed: ${errorText(rollbackError)}`);
+      }
     }
-    try {
-      return await runner([
-        "tmux",
-        "-f",
-        conf,
-        "new-session",
-        "-d",
-        "-s",
-        options.session,
-        "-c",
-        options.cwd,
-        ...options.command,
-      ]);
-    } finally {
-      // Restore inside the lock so the operator's global is back to baseline
-      // before any other run reads it; the lock's own finally then frees it.
-      await restoreGlobalHistoryLimit(previousGlobal, runner);
-    }
-  });
+    throw error;
+  }
   if (create.code !== 0) {
     throw new WuxError(`failed to create tmux session ${options.session}: ${create.stderr || create.stdout}`.trim());
   }
@@ -191,16 +304,15 @@ export async function createSession(options: {
   try {
     // Pin the generous scrollback at session scope (outlives the global restore,
     // visible to show-options, and inherited by later panes/windows).
-    await setSessionOption(options.session, "history-limit", WUX_HISTORY_LIMIT, runner);
+    await setSessionOption(options.session, "history-limit", WUX_HISTORY_LIMIT, connection);
     // Mouse is contentious (it changes native click-drag selection), so it is
     // strictly opt-in and applied only at session scope — never globally and
     // never to the operator's ~/.tmux.conf.
     if (env[WUX_TMUX_MOUSE_ENV] === "1") {
-      await setSessionOption(options.session, "mouse", "on", runner);
+      await setSessionOption(options.session, "mouse", "on", connection);
     }
 
-    const pipe = await runner([
-      "tmux",
+    const pipe = await runTmux(connection, [
       "pipe-pane",
       "-o",
       "-t",
@@ -211,13 +323,21 @@ export async function createSession(options: {
       throw new WuxError(`failed to start pane logging: ${pipe.stderr || pipe.stdout}`.trim());
     }
   } catch (error) {
-    await killSession(options.session, runner).catch(() => undefined);
+    try {
+      await killSession(options.session, connection);
+    } catch (rollbackError) {
+      throw new WuxError(`${errorText(error)}; rollback failed: ${errorText(rollbackError)}`);
+    }
     throw error;
   }
 }
 
-export async function killSession(session: string, runner: TmuxRunner = runProcess): Promise<void> {
-  const result = await runner(["tmux", "kill-session", "-t", exactTarget(session)]);
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export async function killSession(session: string, connection: TmuxConnection = ambientTmuxConnection()): Promise<void> {
+  const result = await runTmux(connection, ["kill-session", "-t", exactTarget(session)]);
   if (result.code !== 0) {
     throw new WuxError(`failed to stop ${session}: ${result.stderr || result.stdout}`.trim());
   }
@@ -239,6 +359,8 @@ export interface SendLiteralOptions {
   backend?: string;
   // Injectable tmux runner + pane capture so the path is unit-testable without
   // a live backend TUI.
+  connection?: TmuxConnection;
+  // Backward-compatible test injection; production callers pass `connection`.
   runner?: TmuxRunner;
   capture?: (session: string, tail: number) => Promise<string>;
   // Base settle between events (type→submit, submit→re-observe). On a
@@ -518,8 +640,8 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function sendKeysOnce(runner: TmuxRunner, target: string, session: string, keys: string[], action: string): Promise<void> {
-  const result = await runner(["tmux", "send-keys", "-t", target, ...keys]);
+async function sendKeysOnce(connection: TmuxConnection, target: string, session: string, keys: string[], action: string): Promise<void> {
+  const result = await runTmux(connection, ["send-keys", "-t", target, ...keys]);
   if (result.code !== 0) {
     throw new WuxError(`failed to ${action} ${session}: ${result.stderr || result.stdout}`.trim());
   }
@@ -528,8 +650,8 @@ async function sendKeysOnce(runner: TmuxRunner, target: string, session: string,
 // Interrupt the pane's current turn with a single C-c. C-c is a key NAME (sent
 // WITHOUT -l) so tmux delivers an interrupt rather than literal text. Narrowly
 // interrupt-only — there is deliberately no arbitrary-key send surface.
-export async function interruptSession(session: string, runner: TmuxRunner = runProcess): Promise<void> {
-  await sendKeysOnce(runner, exactPaneTarget(session), session, ["C-c"], "interrupt");
+export async function interruptSession(session: string, connection: TmuxConnection = ambientTmuxConnection()): Promise<void> {
+  await sendKeysOnce(connection, exactPaneTarget(session), session, ["C-c"], "interrupt");
 }
 
 interface ReadinessProbeOptions {
@@ -576,8 +698,8 @@ async function waitForComposerReady(
 }
 
 export async function sendLiteral(session: string, text: string, options: SendLiteralOptions = {}): Promise<SubmitResult> {
-  const runner = options.runner ?? runProcess;
-  const capture = options.capture ?? capturePane;
+  const connection = options.connection ?? ambientTmuxConnection({ runner: options.runner });
+  const capture = options.capture ?? ((targetSession: string, tail: number) => capturePane(targetSession, tail, connection));
   const target = exactPaneTarget(session);
   const backend = options.backend;
   const sleep = options.sleep ?? delay;
@@ -586,8 +708,8 @@ export async function sendLiteral(session: string, text: string, options: SendLi
   // The shell backend accepts Enter unconditionally — keep the fast path: type +
   // Enter, no capture, always "submitted".
   if (backend === "shell") {
-    await sendKeysOnce(runner, target, session, ["-l", text], "send text to");
-    await sendKeysOnce(runner, target, session, ["Enter"], "submit text to");
+    await sendKeysOnce(connection, target, session, ["-l", text], "send text to");
+    await sendKeysOnce(connection, target, session, ["Enter"], "submit text to");
     return { submission: "submitted", retried: false };
   }
 
@@ -609,7 +731,7 @@ export async function sendLiteral(session: string, text: string, options: SendLi
   // Always type the literal (gate only the submit, never the type) so a deliberate
   // send to a busy pane never loses bytes. The whole literal — newlines included —
   // goes in one `-l`; a single Enter then submits it as ONE turn.
-  await sendKeysOnce(runner, target, session, ["-l", text], "send text to");
+  await sendKeysOnce(connection, target, session, ["-l", text], "send text to");
 
   // Pre-submit readiness gate (gated backends only): wait, bounded, for the typed
   // literal to render and the pane to be at-rest before Enter. Crucially, do NOT
@@ -631,7 +753,7 @@ export async function sendLiteral(session: string, text: string, options: SendLi
   if (preReady === "busy") {
     submission = classifySubmission(before, await probe(), text, backend);
   } else {
-    await sendKeysOnce(runner, target, session, ["Enter"], "submit text to");
+    await sendKeysOnce(connection, target, session, ["Enter"], "submit text to");
     await sleep(settleMs);
     submission = classifySubmission(before, await probe(), text, backend);
 
@@ -643,7 +765,7 @@ export async function sendLiteral(session: string, text: string, options: SendLi
       // not reported as a stale not-submitted.
       const mayResend = gated ? (await waitForComposerReady(probe, text, probeOpts)) === "ready" : true;
       if (mayResend) {
-        await sendKeysOnce(runner, target, session, ["Enter"], "submit text to");
+        await sendKeysOnce(connection, target, session, ["Enter"], "submit text to");
         retried = true;
         await sleep(settleMs);
       }
@@ -654,8 +776,8 @@ export async function sendLiteral(session: string, text: string, options: SendLi
   return { submission, retried };
 }
 
-export async function capturePane(session: string, tail: number): Promise<string> {
-  const result = await runProcess(["tmux", "capture-pane", "-p", "-t", exactPaneTarget(session), "-S", `-${tail}`]);
+export async function capturePane(session: string, tail: number, connection: TmuxConnection = ambientTmuxConnection()): Promise<string> {
+  const result = await runTmux(connection, ["capture-pane", "-p", "-t", exactPaneTarget(session), "-S", `-${tail}`]);
   if (result.code !== 0) {
     throw new WuxError(`failed to read ${session}: ${result.stderr || result.stdout}`.trim());
   }
@@ -678,18 +800,22 @@ export async function capturePane(session: string, tail: number): Promise<string
 export type PaneActivity = "idle" | "foreground-busy" | "unknown";
 
 export interface PaneActivityProbe {
+  connection?: TmuxConnection;
+  // Backward-compatible tmux test injection. `ps` never uses this runner.
   runner?: TmuxRunner;
+  processRunner?: TmuxRunner;
   commandName?: (pid: number, runner?: TmuxRunner) => Promise<string | undefined>;
 }
 
-async function displayField(runner: TmuxRunner, session: string, format: string): Promise<string | undefined> {
-  const result = await runner(["tmux", "display-message", "-p", "-t", exactPaneTarget(session), "-F", format]);
+async function displayField(connection: TmuxConnection, session: string, format: string): Promise<string | undefined> {
+  const result = await runTmux(connection, ["display-message", "-p", "-t", exactPaneTarget(session), "-F", format]);
   if (result.code !== 0) return undefined;
   return (result.stdout.split("\n")[0] ?? "").trim();
 }
 
 export async function paneForegroundActivity(session: string, probe: PaneActivityProbe = {}): Promise<PaneActivity> {
-  const runner = probe.runner ?? runProcess;
+  const connection = probe.connection ?? ambientTmuxConnection({ runner: probe.runner });
+  const processRunner = probe.processRunner ?? runProcess;
   const commandName = probe.commandName ?? processCommandName;
 
   // Read pid and current command in two separate display-message calls rather
@@ -700,15 +826,15 @@ export async function paneForegroundActivity(session: string, probe: PaneActivit
   // "unknown" on those runners (#138). Two single-field reads avoid any
   // separator entirely and are version-stable; the cost is one extra
   // display-message per probe (still no daemon, no watcher).
-  const pidField = await displayField(runner, session, "#{pane_pid}");
+  const pidField = await displayField(connection, session, "#{pane_pid}");
   if (pidField === undefined) return "unknown";
   const panePid = Number.parseInt(pidField, 10);
   if (!Number.isSafeInteger(panePid) || panePid <= 0) return "unknown";
 
-  const currentCommand = await displayField(runner, session, "#{pane_current_command}");
+  const currentCommand = await displayField(connection, session, "#{pane_current_command}");
   if (!currentCommand) return "unknown";
 
-  const shellName = await commandName(panePid, runner);
+  const shellName = await commandName(panePid, processRunner);
   // Without a usable shell name we cannot compare, so stay "unknown" — callers
   // fall back to the pre-existing pane-quiescence behavior rather than blocking.
   if (!shellName) return "unknown";
@@ -716,18 +842,39 @@ export async function paneForegroundActivity(session: string, probe: PaneActivit
   return currentCommand === shellName ? "idle" : "foreground-busy";
 }
 
-export function attachArgs(session: string, env: NodeJS.ProcessEnv = process.env): string[] {
-  if (env.TMUX) return ["tmux", "switch-client", "-t", exactTarget(session)];
-  return ["tmux", "attach-session", "-t", exactTarget(session)];
+export function attachArgs(
+  session: string,
+  env: NodeJS.ProcessEnv = process.env,
+  connection: TmuxConnection = ambientTmuxConnection(),
+): string[] {
+  // Legacy state branches before socket comparison and retains byte-for-byte
+  // ambient attach/switch behavior.
+  if (connection.socketPath === undefined) {
+    return tmuxArgv(connection, [env.TMUX ? "switch-client" : "attach-session", "-t", exactTarget(session)]);
+  }
+  if (!env.TMUX) return tmuxArgv(connection, ["attach-session", "-t", exactTarget(session)]);
+
+  // TMUX is <socket>,<client-pid>,<window>; consume only the two numeric suffixes
+  // from the right because a valid socket path itself may contain commas.
+  const currentSocket = env.TMUX.match(/^(.*),\d+,\d+$/)?.[1];
+  if (currentSocket !== connection.socketPath) {
+    const current = currentSocket ?? `unparseable TMUX value ${JSON.stringify(env.TMUX)}`;
+    throw new WuxError(
+      `current tmux server ${current} differs from run server ${connection.socketPath}; attach from outside the current tmux client`,
+    );
+  }
+  return tmuxArgv(connection, ["switch-client", "-t", exactTarget(session)]);
 }
 
 export async function attachSession(options: {
   session: string;
+  connection: TmuxConnection;
   env?: NodeJS.ProcessEnv;
   runner?: TmuxRunner;
 }): Promise<void> {
-  const args = attachArgs(options.session, options.env);
-  const result = await (options.runner ?? runInteractiveProcess)(args);
+  const connection = { ...options.connection, runner: options.runner ?? runInteractiveProcess };
+  const args = attachArgs(options.session, options.env, connection);
+  const result = await connection.runner(args);
   if (result.code !== 0) {
     throw new WuxError(`failed to attach to ${options.session}: ${result.stderr || result.stdout || `tmux exited ${result.code}`}`.trim());
   }

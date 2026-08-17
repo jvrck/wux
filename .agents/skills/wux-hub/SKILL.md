@@ -39,7 +39,8 @@ Use raw `status` and last-activity only. Last activity comes from
 blocked, or attention badge from heuristics.
 
 For any selected run, call MCP `view` to show watch hints: tmux target, run dir,
-`pane.log`, and the exact `wux attach` or `ssh -t ... tmux attach` command.
+`pane.log`, and the exact local `wux attach` or remote `ssh -t ... wux attach`
+command. Local socket-bound results can also supply a shell-safe `tmuxCommand`.
 
 Optional health panel: run `wux remotes doctor --all --json` and render remote
 health beside the roster. Keep health separate from run status.

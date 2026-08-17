@@ -5,7 +5,7 @@ import { shellCommand } from "../src/backends/shell";
 import { backendCommand } from "../src/backends";
 import { runCommand } from "../src/commands/run";
 import { runProcess } from "../src/runtime/process";
-import { validateRunName } from "../src/runtime/runs";
+import { loadRun, validateRunName } from "../src/runtime/runs";
 import { runDir, runsRoot, stateRoot } from "../src/runtime/state";
 import { hasSession } from "../src/runtime/tmux";
 import { hasTmux, killTmux, tempState, waitForArgv } from "./helpers";
@@ -65,6 +65,81 @@ describe("shell run lifecycle", () => {
       await expect(runCommand({ backend: "shell", name, cwd: temp.root })).rejects.toThrow("already exists");
     } finally {
       if (created) await killTmux(name);
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("uses RunOptions.env for creation and socket discovery", async () => {
+    if (!(await hasTmux())) return;
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("run-env-socket");
+    let socketPath: string | undefined;
+
+    try {
+      const socketParent = join(temp.root, "isolated-tmux");
+      await mkdir(socketParent, { recursive: true });
+      const env = { ...process.env, XDG_STATE_HOME: temp.stateHome, TMUX_TMPDIR: socketParent } as NodeJS.ProcessEnv;
+      delete env.TMUX;
+      await runCommand({ backend: "shell", name, cwd: temp.root, env });
+      const meta = await loadRun(name);
+      socketPath = meta.tmuxSocketPath;
+      expect(socketPath).toContain(socketParent);
+      expect((await runProcess(["tmux", "-S", socketPath as string, "has-session", "-t", `=wux_${name}`])).code).toBe(0);
+    } finally {
+      if (socketPath) await runProcess(["tmux", "-S", socketPath, "kill-server"]);
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("rolls back through the creating connection when socket discovery fails", async () => {
+    if (!(await hasTmux())) return;
+    const realTmux = Bun.which("tmux");
+    if (!realTmux) return;
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("discover-rollback");
+    const decoy = `wux_decoy_${process.pid}_${Date.now()}`;
+    const socketParent = join(temp.root, "rollback-tmux");
+    const bin = join(temp.root, "bin");
+    const fakeTmux = join(bin, "tmux");
+    const callLog = join(temp.root, "tmux-calls.log");
+    const env = {
+      ...process.env,
+      XDG_STATE_HOME: temp.stateHome,
+      TMUX_TMPDIR: socketParent,
+      WUX_REAL_TMUX: realTmux,
+      WUX_TMUX_LOG: callLog,
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+    } as NodeJS.ProcessEnv;
+    delete env.TMUX;
+
+    try {
+      await mkdir(socketParent, { recursive: true });
+      await mkdir(bin, { recursive: true });
+      await writeFile(
+        fakeTmux,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$WUX_TMUX_LOG\"\nfor arg in \"$@\"; do [ \"$arg\" = '#{socket_path}' ] && exit 71; done\nexec \"$WUX_REAL_TMUX\" \"$@\"\n",
+        "utf8",
+      );
+      await chmod(fakeTmux, 0o755);
+      expect((await runProcess([realTmux, "new-session", "-d", "-s", decoy, "sh"], { env })).code).toBe(0);
+
+      await expect(runCommand({ backend: "shell", name, cwd: temp.root, env })).rejects.toThrow("failed to discover tmux socket");
+
+      await expect(stat(join(temp.stateHome, "wux", "runs", name))).rejects.toThrow();
+      expect((await runProcess([realTmux, "has-session", "-t", `=wux_${name}`], { env })).code).not.toBe(0);
+      expect((await runProcess([realTmux, "has-session", "-t", `=${decoy}`], { env })).code).toBe(0);
+      const calls = await readFile(callLog, "utf8");
+      expect(calls).toContain(`display-message -p -t =wux_${name}: -F #{socket_path}`);
+      expect(calls).toContain(`kill-session -t =wux_${name}`);
+      expect(calls).not.toContain("kill-server");
+    } finally {
+      await runProcess([realTmux, "kill-session", "-t", `=${decoy}`], { env });
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();
     }

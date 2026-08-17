@@ -5,7 +5,7 @@ import { attachRun } from "../src/commands/attach";
 import { runCommand } from "../src/commands/run";
 import { runProcess, type ProcessResult } from "../src/runtime/process";
 import { loadRun, saveRun } from "../src/runtime/runs";
-import { attachArgs } from "../src/runtime/tmux";
+import { attachArgs, socketTmuxConnection } from "../src/runtime/tmux";
 import { hasTmux, killTmux, tempState } from "./helpers";
 
 function uniqueRunName(prefix: string): string {
@@ -21,6 +21,36 @@ describe("attach", () => {
       "-t",
       "=wux_attach",
     ]);
+    expect(attachArgs("wux_attach", {} as NodeJS.ProcessEnv, socketTmuxConnection("/tmp/wux.sock"))).toEqual([
+      "tmux",
+      "-S",
+      "/tmp/wux.sock",
+      "attach-session",
+      "-t",
+      "=wux_attach",
+    ]);
+    expect(attachArgs("wux_attach", { TMUX: "/tmp/wux.sock,12,0" } as NodeJS.ProcessEnv, socketTmuxConnection("/tmp/wux.sock"))).toEqual([
+      "tmux",
+      "-S",
+      "/tmp/wux.sock",
+      "switch-client",
+      "-t",
+      "=wux_attach",
+    ]);
+    expect(attachArgs("wux_attach", { TMUX: "/tmp/wux,isolated/tmux-501/default,12,0" } as NodeJS.ProcessEnv, socketTmuxConnection("/tmp/wux,isolated/tmux-501/default"))).toEqual([
+      "tmux",
+      "-S",
+      "/tmp/wux,isolated/tmux-501/default",
+      "switch-client",
+      "-t",
+      "=wux_attach",
+    ]);
+    expect(() =>
+      attachArgs("wux_attach", { TMUX: "/tmp/other.sock,12,0" } as NodeJS.ProcessEnv, socketTmuxConnection("/tmp/wux.sock")),
+    ).toThrow("current tmux server /tmp/other.sock differs from run server /tmp/wux.sock");
+    expect(() =>
+      attachArgs("wux_attach", { TMUX: "malformed" } as NodeJS.ProcessEnv, socketTmuxConnection("/tmp/wux.sock")),
+    ).toThrow('unparseable TMUX value "malformed" differs from run server /tmp/wux.sock');
   });
 
   test("records an attach event before handing off to tmux", async () => {
@@ -44,7 +74,9 @@ describe("attach", () => {
       };
 
       await attachRun({ name, env: {} as NodeJS.ProcessEnv, runner });
-      expect(calls).toEqual([["tmux", "attach-session", "-t", `=wux_${name}`]]);
+      const socketPath = (await loadRun(name)).tmuxSocketPath;
+      if (!socketPath) throw new Error("new run did not persist its tmux socket");
+      expect(calls).toEqual([["tmux", "-S", socketPath, "attach-session", "-t", `=wux_${name}`]]);
     } finally {
       if (created) await killTmux(name);
       process.env.XDG_STATE_HOME = old;
@@ -64,16 +96,18 @@ describe("attach", () => {
     try {
       await runCommand({ backend: "shell", name, cwd: temp.root });
       created = true;
+      const socketPath = (await loadRun(name)).tmuxSocketPath;
+      if (!socketPath) throw new Error("new run did not persist its tmux socket");
       await attachRun({
         name,
-        env: { TMUX: "/tmp/tmux-client" } as NodeJS.ProcessEnv,
+        env: { TMUX: `${socketPath},123,0` } as NodeJS.ProcessEnv,
         runner: async (args) => {
           calls.push(args);
           return { code: 0, stdout: "", stderr: "" };
         },
       });
 
-      expect(calls).toEqual([["tmux", "switch-client", "-t", `=wux_${name}`]]);
+      expect(calls).toEqual([["tmux", "-S", socketPath, "switch-client", "-t", `=wux_${name}`]]);
     } finally {
       if (created) await killTmux(name);
       process.env.XDG_STATE_HOME = old;

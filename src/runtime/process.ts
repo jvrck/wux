@@ -7,10 +7,10 @@ export interface ProcessResult {
   stderr: string;
 }
 
-export function runProcess(args: string[], options: { cwd?: string; timeoutMs?: number } = {}): Promise<ProcessResult> {
+export function runProcess(args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {}): Promise<ProcessResult> {
   return new Promise((resolve) => {
     const [command, ...commandArgs] = args;
-    const child = spawn(command, commandArgs, { cwd: options.cwd, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, commandArgs, { cwd: options.cwd, env: options.env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     let settled = false;

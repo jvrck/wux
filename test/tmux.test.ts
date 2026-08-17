@@ -1,6 +1,70 @@
 import { describe, expect, test } from "bun:test";
 import type { ProcessResult } from "../src/runtime/process";
-import { paneForegroundActivity } from "../src/runtime/tmux";
+import {
+  connectionForMeta,
+  discoverSocketPath,
+  paneForegroundActivity,
+  probeSession,
+  socketTmuxConnection,
+} from "../src/runtime/tmux";
+
+test("centralizes exact socket qualification for relative and absolute tmux executables", async () => {
+  for (const executable of ["tmux-custom", "/opt/tmux/bin/tmux"]) {
+    const calls: string[][] = [];
+    const connection = socketTmuxConnection("/tmp/wux.socket", {
+      executable,
+      runner: async (args) => {
+        calls.push(args);
+        return { code: 0, stdout: "/tmp/wux.socket\n", stderr: "" };
+      },
+    });
+    expect(await discoverSocketPath("wux_bound", connection)).toBe("/tmp/wux.socket");
+    expect(calls).toEqual([
+      [executable, "-S", "/tmp/wux.socket", "display-message", "-p", "-t", "=wux_bound:", "-F", "#{socket_path}"],
+    ]);
+  }
+});
+
+test("metadata absence is ambient while present invalid socket values fail closed", () => {
+  expect(connectionForMeta({}).socketPath).toBeUndefined();
+  for (const tmuxSocketPath of [undefined, "", "relative/socket", 42]) {
+    expect(() => connectionForMeta({ tmuxSocketPath })).toThrow("invalid tmuxSocketPath");
+  }
+});
+
+test("stored-socket liveness distinguishes absence from indeterminate unavailability", async () => {
+  const probe = async (stderr: string) =>
+    probeSession(
+      "wux_bound",
+      socketTmuxConnection("/tmp/wux.socket", { runner: async () => ({ code: 1, stdout: "", stderr }) }),
+    );
+  expect((await probe("can't find session: wux_bound")).state).toBe("absent");
+  expect((await probe("no server running on /tmp/wux.socket")).state).toBe("absent");
+  expect((await probe("error connecting to /tmp/wux.socket (Permission denied)")).state).toBe("unavailable");
+});
+
+test("socket qualification applies only to tmux while the ps probe stays separate", async () => {
+  const tmuxCalls: string[][] = [];
+  const processCalls: string[][] = [];
+  const connection = socketTmuxConnection("/tmp/wux.socket", {
+    executable: "/opt/tmux/bin/tmux",
+    runner: async (args) => {
+      tmuxCalls.push(args);
+      const format = args[args.indexOf("-F") + 1];
+      return { code: 0, stdout: format === "#{pane_pid}" ? "4242\n" : "zsh\n", stderr: "" };
+    },
+  });
+  const activity = await paneForegroundActivity("wux_bound", {
+    connection,
+    processRunner: async (args) => {
+      processCalls.push(args);
+      return { code: 0, stdout: "/bin/zsh\n", stderr: "" };
+    },
+  });
+  expect(activity).toBe("idle");
+  expect(tmuxCalls.every((args) => args[0] === "/opt/tmux/bin/tmux" && args[1] === "-S" && args[2] === "/tmp/wux.socket")).toBe(true);
+  expect(processCalls).toEqual([["ps", "-o", "comm=", "-p", "4242"]]);
+});
 
 // The probe reads pid and current command in two separate `display-message`
 // calls (no in-band separator) so it is robust to tmux escaping non-printable
