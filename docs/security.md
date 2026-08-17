@@ -51,10 +51,10 @@ PR as soon as GitHub identifies an eligible fix; security remediation is not
 held for the routine schedule, including when the available fix is a major
 version update.
 
-Separately, `.github/dependabot.yml` creates one routine Bun PR and one routine
-GitHub Actions PR each Monday in `Australia/Sydney`. Each routine PR groups
-minor and patch updates for its ecosystem. Routine major upgrades are excluded
-and remain deliberate human work.
+Separately, `.github/dependabot.yml` can create at most one grouped routine PR
+per ecosystem each Monday in `Australia/Sydney` when eligible updates exist.
+Each routine PR groups minor and patch updates for its ecosystem. Routine major
+upgrades are excluded and remain deliberate human work.
 
 ## Release SBOM
 

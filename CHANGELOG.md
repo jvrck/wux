@@ -10,16 +10,16 @@ intentionally not reproduced here.
 
 ## Unreleased
 
-### Security
-
-- Add Dependabot remediation for Bun dependencies and GitHub Actions, with
-  immediate security-update PRs and weekly grouped routine minor/patch updates.
-
 ### Fixed
 
 - Bind new runs to their exact creating tmux socket so lifecycle commands keep
   routing correctly across simultaneous tmux servers; legacy run metadata keeps
   its ambient-server fallback.
+
+### Security
+
+- Add Dependabot remediation for Bun dependencies and GitHub Actions, with
+  immediate security-update PRs and weekly grouped routine minor/patch updates.
 
 ## 2026.08.04
 

@@ -6,6 +6,11 @@ updates:
       interval: weekly
       day: monday
       timezone: Australia/Sydney
+    allow:
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-minor
+          - version-update:semver-patch
     groups:
       routine-minor-and-patch:
         patterns:
@@ -13,10 +18,6 @@ updates:
         update-types:
           - minor
           - patch
-    ignore:
-      - dependency-name: "*"
-        update-types:
-          - version-update:semver-major
 
   - package-ecosystem: github-actions
     directory: /
@@ -24,6 +25,11 @@ updates:
       interval: weekly
       day: monday
       timezone: Australia/Sydney
+    allow:
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-minor
+          - version-update:semver-patch
     groups:
       routine-minor-and-patch:
         patterns:
@@ -31,7 +37,3 @@ updates:
         update-types:
           - minor
           - patch
-    ignore:
-      - dependency-name: "*"
-        update-types:
-          - version-update:semver-major
