@@ -64,7 +64,7 @@ jobs:
             printf 'safe_ref=%s\n' "$safe_ref"
           } >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v6.1.0
         with:
           repository: ${{ steps.preview-ref.outputs.checkout_repository }}
           ref: ${{ steps.preview-ref.outputs.requested_ref }}
