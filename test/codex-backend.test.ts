@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { backendCommand } from "../src/backends";
 import { codexCommand } from "../src/backends/codex";
 import { runCommand } from "../src/commands/run";
@@ -36,7 +36,12 @@ describe("codex backend", () => {
       ]);
       expect(await backendCommand("codex", { PATH: bin })).toEqual([fakeCodex]);
 
-      await runCommand({ backend: "codex", name, cwd: temp.root, env: { PATH: bin, WUX_NOTIFY_PATH: "/tmp/wux-notify" } });
+      await runCommand({
+        backend: "codex",
+        name,
+        cwd: temp.root,
+        env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, WUX_NOTIFY_PATH: "/tmp/wux-notify" },
+      });
       created = true;
       expect(await hasSession(`wux_${name}`)).toBe(true);
 
@@ -104,7 +109,7 @@ describe("codex backend", () => {
         backend: "codex",
         name,
         cwd: temp.root,
-        env: { PATH: bin, WUX_NOTIFY_PATH: "/tmp/wux-notify" },
+        env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, WUX_NOTIFY_PATH: "/tmp/wux-notify" },
         backendArgs: ["--full-auto"],
       });
       created = true;

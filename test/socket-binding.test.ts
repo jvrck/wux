@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runProcess } from "../src/runtime/process";
 import { hasTmux } from "./helpers";
@@ -29,6 +29,15 @@ function cleanEnv(extra: Record<string, string>): Record<string, string> {
   delete env.TMUX;
   delete env.TMUX_TMPDIR;
   return env;
+}
+
+async function readUntil(name: string, marker: string, env: Record<string, string>): Promise<void> {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const result = await wux(["read", name, "--tail", "20"], env);
+    if (result.code === 0 && result.stdout.includes(marker)) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`timed out waiting for ${marker} from ${name}`);
 }
 
 describe("socket-bound tmux runs", () => {
@@ -71,9 +80,8 @@ describe("socket-bound tmux runs", () => {
       expect((await wux(["status"], base)).stdout).toContain(nameA);
       expect((await wux(["send", nameA, "printf 'SOCKET_A_OK\\n'"], base)).code).toBe(0);
       expect((await wux(["send", nameB, "printf 'SOCKET_B_OK\\n'"], base)).code).toBe(0);
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      expect((await wux(["read", nameA, "--tail", "20"], base)).stdout).toContain("SOCKET_A_OK");
-      expect((await wux(["read", nameB, "--tail", "20"], base)).stdout).toContain("SOCKET_B_OK");
+      await readUntil(nameA, "SOCKET_A_OK", base);
+      await readUntil(nameB, "SOCKET_B_OK", base);
       expect((await wux(["wait", nameA, "--idle", "100ms", "--timeout", "2s"], base)).code).toBe(0);
 
       expect((await wux(["send", nameB, "sleep 30"], base)).code).toBe(0);
@@ -83,6 +91,31 @@ describe("socket-bound tmux runs", () => {
       expect((await wux(["stop", nameA, "--yes"], base)).code).toBe(0);
       expect((await runProcess(["tmux", "-S", socketB, "has-session", "-t", `=${metaA.tmuxSession}`])).code).toBe(0);
       expect((await wux(["stop", nameB, "--yes"], base)).code).toBe(0);
+
+      // Legacy metadata has no socket and deliberately keeps ambient-server routing.
+      const legacyName = `legacy-${process.pid}-${Date.now()}`;
+      const legacySession = `wux_${legacyName}`;
+      expect((await runProcess(["tmux", "-S", socketB, "new-session", "-d", "-s", legacySession, "sh"])).code).toBe(0);
+      const legacyDir = join(state, "wux", "runs", legacyName);
+      await mkdir(legacyDir, { recursive: true });
+      await writeFile(
+        join(legacyDir, "meta.json"),
+        `${JSON.stringify({
+          name: legacyName,
+          backend: "shell",
+          tmuxSession: legacySession,
+          cwd: root,
+          owner: "legacy@test",
+          createdAt: new Date().toISOString(),
+          status: "running",
+        })}\n`,
+        "utf8",
+      );
+      expect((await wux(["status"], bEnv)).stdout).toContain(legacyName);
+      expect((await wux(["send", legacyName, "--force-owner", "printf 'LEGACY_OK\\n'"], bEnv)).code).toBe(0);
+      await readUntil(legacyName, "LEGACY_OK", bEnv);
+      expect((await wux(["stop", legacyName, "--yes"], bEnv)).code).toBe(0);
+      expect((await runProcess(["tmux", "-S", socketB, "has-session", "-t", `=${legacySession}`])).code).not.toBe(0);
 
       // An unavailable stored socket must not fall back to the caller's B server.
       const missingName = `socket-missing-${process.pid}-${Date.now()}`;

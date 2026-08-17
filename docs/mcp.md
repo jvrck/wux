@@ -33,7 +33,7 @@ hosts. **Mutations** (`open`/`send`/`interrupt`/`stop`) require an explicit
 | `read` | observation | `name`, `target?`, `tail?` | Return a **labeled pane capture** (raw TUI, may be truncated); for a local target it also includes `pane.log` / run-dir paths. |
 | `interrupt` | mutation | `name`, `target`, `forceOwner?` | Send a single `C-c` to a run's current turn. |
 | `stop` | mutation | `name`, `target`, `yes:true` | Stop a run (destructive; requires `yes:true`). |
-| `view` | observation | `name`, `target?` | How to watch live: tmux target, run dir, `pane.log`, and the exact `wux attach` / `ssh -t … tmux attach` command. |
+| `view` | observation | `name`, `target?` | How to watch live: stable tmux target, run dir, `pane.log`, and the exact `wux attach` / `ssh -t … wux attach` command. Local socket-bound runs also include a POSIX-shell-safe `tmuxCommand`. |
 
 Tool and server descriptions frame wux as *inspectable durable TUI session
 control*, not autonomous task execution.
@@ -153,7 +153,7 @@ Read this before pointing a desktop app at `wux mcp`.
 No web-terminal bridge, no network-exposed MCP endpoint, no per-run locks/leases,
 no secret redaction, and no autonomous turn I/O / `wux wait` runtime.
 
-# Socket-bound runs
+## Socket-bound runs
 
 The local MCP tools load run metadata before touching tmux, so runs created by
 current Wux are addressed through their persisted exact tmux socket. Remote MCP

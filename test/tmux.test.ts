@@ -9,7 +9,7 @@ test("centralizes exact socket qualification and discovery", async () => {
     return { code: 0, stdout: "/tmp/wux.socket\n", stderr: "" };
   });
   expect(await discoverSocketPath("wux_bound", runner)).toBe("/tmp/wux.socket");
-  expect(calls).toEqual([["tmux", "-S", "/tmp/wux.socket", "display-message", "-p", "-t", "=wux_bound", "-F", "#{socket_path}"]]);
+  expect(calls).toEqual([["tmux", "-S", "/tmp/wux.socket", "display-message", "-p", "-t", "=wux_bound:", "-F", "#{socket_path}"]]);
 });
 
 // The probe reads pid and current command in two separate `display-message`

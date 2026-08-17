@@ -5,7 +5,7 @@ import { shellCommand } from "../src/backends/shell";
 import { backendCommand } from "../src/backends";
 import { runCommand } from "../src/commands/run";
 import { runProcess } from "../src/runtime/process";
-import { validateRunName } from "../src/runtime/runs";
+import { loadRun, validateRunName } from "../src/runtime/runs";
 import { runDir, runsRoot, stateRoot } from "../src/runtime/state";
 import { hasSession } from "../src/runtime/tmux";
 import { hasTmux, killTmux, tempState, waitForArgv } from "./helpers";
@@ -65,6 +65,31 @@ describe("shell run lifecycle", () => {
       await expect(runCommand({ backend: "shell", name, cwd: temp.root })).rejects.toThrow("already exists");
     } finally {
       if (created) await killTmux(name);
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("uses RunOptions.env for creation and socket discovery", async () => {
+    if (!(await hasTmux())) return;
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("run-env-socket");
+    let socketPath: string | undefined;
+
+    try {
+      const socketParent = join(temp.root, "isolated-tmux");
+      await mkdir(socketParent, { recursive: true });
+      const env = { ...process.env, XDG_STATE_HOME: temp.stateHome, TMUX_TMPDIR: socketParent } as NodeJS.ProcessEnv;
+      delete env.TMUX;
+      await runCommand({ backend: "shell", name, cwd: temp.root, env });
+      const meta = await loadRun(name);
+      socketPath = meta.tmuxSocketPath;
+      expect(socketPath).toContain(socketParent);
+      expect((await runProcess(["tmux", "-S", socketPath as string, "has-session", "-t", `=wux_${name}`])).code).toBe(0);
+    } finally {
+      if (socketPath) await runProcess(["tmux", "-S", socketPath, "kill-server"]);
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();
     }

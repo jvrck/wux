@@ -11,7 +11,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
     {
       title: "how to watch a run",
       description:
-        "Report how to watch a run live: its tmux target, run dir, pane.log path, and the exact attach command. " +
+        "Report how to watch a run live: its stable tmux target, run dir, pane.log path, and Wux attach command. " +
         "Inspectable durable TUI session control — not autonomous task execution. " +
         "Visibility only (no control, no lock). Observation: target defaults to local.",
       inputSchema: {
@@ -29,6 +29,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
           name: result.name,
           tmuxTarget: result.tmuxTarget,
           ...(result.tmuxSocketPath !== undefined ? { tmuxSocketPath: result.tmuxSocketPath } : {}),
+          ...(result.tmuxCommand !== undefined ? { tmuxCommand: result.tmuxCommand } : {}),
           runDir: result.runDir,
           paneLogPath: result.paneLogPath,
           attachCommand: `wux attach ${result.name}`,
@@ -43,6 +44,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
       return toolResult({
         identity: identityFor(resolved, name, tmuxSession),
         name,
+        tmuxTarget: `=${tmuxSession}:`,
         attachCommand: `ssh -t ${resolved.host as string} wux attach ${name}`,
         note: "run dir, pane.log, and last-input are on the remote host; run wux read/list against this target to inspect them",
       });

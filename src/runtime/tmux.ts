@@ -60,7 +60,7 @@ export async function hasSession(session: string, runner: TmuxRunner = runProces
 // Ask the server that created the session.  This is authoritative for both the
 // default server and an isolated TMUX_TMPDIR server; never persist the parent dir.
 export async function discoverSocketPath(session: string, runner: TmuxRunner = runProcess): Promise<string> {
-  const result = await runner(["tmux", "display-message", "-p", "-t", exactTarget(session), "-F", "#{socket_path}"]);
+  const result = await runner(["tmux", "display-message", "-p", "-t", exactPaneTarget(session), "-F", "#{socket_path}"]);
   const socketPath = result.stdout.trim();
   if (result.code !== 0 || socketPath.length === 0) {
     throw new WuxError(`failed to discover tmux socket for ${session}: ${result.stderr || result.stdout}`.trim());
@@ -739,8 +739,9 @@ export async function paneForegroundActivity(session: string, probe: PaneActivit
 
 export function attachArgs(session: string, env: NodeJS.ProcessEnv = process.env, socketPath?: string): string[] {
   const prefix = socketPath ? ["tmux", "-S", socketPath] : ["tmux"];
-  if (!socketPath) return env.TMUX ? [...prefix, "switch-client", "-t", exactTarget(session)] : [...prefix, "attach-session", "-t", exactTarget(session)];
-  const currentSocket = env.TMUX?.split(",", 1)[0];
+  // TMUX is <socket>,<client-pid>,<window>; consume only the two numeric suffixes
+  // from the right because a valid socket path itself may contain commas.
+  const currentSocket = env.TMUX?.match(/^(.*),\d+,\d+$/)?.[1];
   if (env.TMUX && currentSocket !== socketPath) {
     throw new WuxError(`run belongs to tmux server ${socketPath}; attach from outside the current tmux client`);
   }

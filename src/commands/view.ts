@@ -14,8 +14,10 @@ export interface ViewResult {
   tmuxSession: string;
   // Exact socket persisted at creation; absent only for legacy metadata.
   tmuxSocketPath?: string;
-  // Socket-qualified tmux invocation fragment, never an ambient-server hint.
+  // Stable exact tmux target; callers may keep using it as `tmux attach -t "$target"`.
   tmuxTarget: string;
+  // Socket-qualified, POSIX-shell-safe attach command for current metadata.
+  tmuxCommand?: string;
   runDir: string;
   paneLogPath: string;
   lastInputBy?: string | null;
@@ -30,12 +32,17 @@ export async function viewCommand(options: ViewOptions): Promise<ViewResult> {
     name: meta.name,
     tmuxSession: meta.tmuxSession,
     ...(meta.tmuxSocketPath !== undefined ? { tmuxSocketPath: meta.tmuxSocketPath } : {}),
-    tmuxTarget: meta.tmuxSocketPath
-      ? `-S ${JSON.stringify(meta.tmuxSocketPath)} attach-session -t =${meta.tmuxSession}`
-      : `attach-session -t =${meta.tmuxSession}`,
+    tmuxTarget: `=${meta.tmuxSession}:`,
+    ...(meta.tmuxSocketPath !== undefined
+      ? { tmuxCommand: `tmux -S ${shellQuote(meta.tmuxSocketPath)} attach-session -t ${shellQuote(`=${meta.tmuxSession}`)}` }
+      : {}),
     runDir: dir,
     paneLogPath: join(dir, "pane.log"),
     lastInputBy: input.lastInputBy,
     lastInputAt: input.lastInputAt,
   };
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }

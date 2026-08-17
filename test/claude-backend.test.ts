@@ -40,7 +40,12 @@ describe("claude backend", () => {
       });
       expect(await backendCommand("claude", { PATH: bin })).toEqual([fakeClaude]);
 
-      await runCommand({ backend: "claude", name, cwd: temp.root, env: { PATH: bin, WUX_NOTIFY_PATH: "/tmp/wux-notify" } });
+      await runCommand({
+        backend: "claude",
+        name,
+        cwd: temp.root,
+        env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, WUX_NOTIFY_PATH: "/tmp/wux-notify" },
+      });
       created = true;
       expect(await hasSession(`wux_${name}`)).toBe(true);
 
@@ -124,7 +129,7 @@ describe("claude backend", () => {
         backend: "claude",
         name,
         cwd: temp.root,
-        env: { PATH: bin, WUX_NOTIFY_PATH: "/tmp/wux-notify" },
+        env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, WUX_NOTIFY_PATH: "/tmp/wux-notify" },
         backendArgs: ["--dangerously-skip-permissions"],
       });
       created = true;
@@ -163,7 +168,12 @@ describe("claude backend", () => {
       await writeFile(fakeClaude, "#!/bin/sh\nprintf 'ready\\n'\nsleep 30\n", "utf8");
       await chmod(fakeClaude, 0o755);
 
-      await runCommand({ backend: "claude", name, cwd: temp.root, env: { PATH: bin, WUX_NOTIFY_PATH: "/tmp/wux-notify" } });
+      await runCommand({
+        backend: "claude",
+        name,
+        cwd: temp.root,
+        env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, WUX_NOTIFY_PATH: "/tmp/wux-notify" },
+      });
       created = true;
 
       const meta = JSON.parse(await readFile(join(temp.stateHome, "wux", "runs", name, "meta.json"), "utf8"));

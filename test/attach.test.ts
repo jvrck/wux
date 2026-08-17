@@ -37,6 +37,14 @@ describe("attach", () => {
       "-t",
       "=wux_attach",
     ]);
+    expect(attachArgs("wux_attach", { TMUX: "/tmp/wux,isolated/tmux-501/default,12,0" } as NodeJS.ProcessEnv, "/tmp/wux,isolated/tmux-501/default")).toEqual([
+      "tmux",
+      "-S",
+      "/tmp/wux,isolated/tmux-501/default",
+      "switch-client",
+      "-t",
+      "=wux_attach",
+    ]);
     expect(() => attachArgs("wux_attach", { TMUX: "/tmp/other.sock,12,0" } as NodeJS.ProcessEnv, "/tmp/wux.sock")).toThrow(
       "attach from outside",
     );

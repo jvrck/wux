@@ -51,7 +51,8 @@ steer the wrong host.
 
 Report the exact MCP tool, target, run name, and result envelope. For `view`,
 surface watch hints such as tmux target, run dir, `pane.log`, and the exact
-`wux attach` or SSH tmux attach command returned by the tool.
+local `wux attach` or remote SSH `wux attach` command returned by the tool.
+For local socket-bound results, also surface the shell-safe `tmuxCommand`.
 
 ## Verification
 

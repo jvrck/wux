@@ -255,8 +255,9 @@ describe("mcp tools — full local loop (open → list → send → read → int
       // view (observation; watch instructions + lastInput)
       const view = await call(harness.client, "view", { name });
       expect(typeof view.structured.tmuxSocketPath).toBe("string");
-      expect(view.structured.tmuxTarget).toBe(
-        `-S ${JSON.stringify(view.structured.tmuxSocketPath)} attach-session -t =wux_${name}`,
+      expect(view.structured.tmuxTarget).toBe(`=wux_${name}:`);
+      expect(view.structured.tmuxCommand).toBe(
+        `tmux -S '${view.structured.tmuxSocketPath}' attach-session -t '=wux_${name}'`,
       );
       expect(view.structured.attachCommand).toBe(`wux attach ${name}`);
       expect(typeof view.structured.paneLogPath).toBe("string");
@@ -322,6 +323,13 @@ describe("mcp tools — remote target forwarding", () => {
       expect(identity.host).toBe("worker");
       // forwarded the read to the worker host over the hardened SSH path
       expect(calls.some((argv) => argv.includes("worker") && argv[argv.length - 1].includes("'read'"))).toBe(true);
+
+      // Remote metadata stays remote, but consumers retain the established
+      // tmuxTarget field and receive a Wux-level attach command.
+      const view = await call(harness.client, "view", { name: "r1", target: "work" });
+      expect(view.structured.tmuxTarget).toBe("=wux_r1:");
+      expect(view.structured.attachCommand).toBe("ssh -t worker wux attach r1");
+      expect(view.structured.tmuxCommand).toBeUndefined();
     } finally {
       await harness.close();
     }
