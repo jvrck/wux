@@ -5,7 +5,7 @@ import { attachRun } from "../src/commands/attach";
 import { runCommand } from "../src/commands/run";
 import { runProcess, type ProcessResult } from "../src/runtime/process";
 import { loadRun, saveRun } from "../src/runtime/runs";
-import { attachArgs } from "../src/runtime/tmux";
+import { attachArgs, socketTmuxConnection } from "../src/runtime/tmux";
 import { hasTmux, killTmux, tempState } from "./helpers";
 
 function uniqueRunName(prefix: string): string {
@@ -21,7 +21,7 @@ describe("attach", () => {
       "-t",
       "=wux_attach",
     ]);
-    expect(attachArgs("wux_attach", {} as NodeJS.ProcessEnv, "/tmp/wux.sock")).toEqual([
+    expect(attachArgs("wux_attach", {} as NodeJS.ProcessEnv, socketTmuxConnection("/tmp/wux.sock"))).toEqual([
       "tmux",
       "-S",
       "/tmp/wux.sock",
@@ -29,7 +29,7 @@ describe("attach", () => {
       "-t",
       "=wux_attach",
     ]);
-    expect(attachArgs("wux_attach", { TMUX: "/tmp/wux.sock,12,0" } as NodeJS.ProcessEnv, "/tmp/wux.sock")).toEqual([
+    expect(attachArgs("wux_attach", { TMUX: "/tmp/wux.sock,12,0" } as NodeJS.ProcessEnv, socketTmuxConnection("/tmp/wux.sock"))).toEqual([
       "tmux",
       "-S",
       "/tmp/wux.sock",
@@ -37,7 +37,7 @@ describe("attach", () => {
       "-t",
       "=wux_attach",
     ]);
-    expect(attachArgs("wux_attach", { TMUX: "/tmp/wux,isolated/tmux-501/default,12,0" } as NodeJS.ProcessEnv, "/tmp/wux,isolated/tmux-501/default")).toEqual([
+    expect(attachArgs("wux_attach", { TMUX: "/tmp/wux,isolated/tmux-501/default,12,0" } as NodeJS.ProcessEnv, socketTmuxConnection("/tmp/wux,isolated/tmux-501/default"))).toEqual([
       "tmux",
       "-S",
       "/tmp/wux,isolated/tmux-501/default",
@@ -45,9 +45,12 @@ describe("attach", () => {
       "-t",
       "=wux_attach",
     ]);
-    expect(() => attachArgs("wux_attach", { TMUX: "/tmp/other.sock,12,0" } as NodeJS.ProcessEnv, "/tmp/wux.sock")).toThrow(
-      "attach from outside",
-    );
+    expect(() =>
+      attachArgs("wux_attach", { TMUX: "/tmp/other.sock,12,0" } as NodeJS.ProcessEnv, socketTmuxConnection("/tmp/wux.sock")),
+    ).toThrow("current tmux server /tmp/other.sock differs from run server /tmp/wux.sock");
+    expect(() =>
+      attachArgs("wux_attach", { TMUX: "malformed" } as NodeJS.ProcessEnv, socketTmuxConnection("/tmp/wux.sock")),
+    ).toThrow('unparseable TMUX value "malformed" differs from run server /tmp/wux.sock');
   });
 
   test("records an attach event before handing off to tmux", async () => {

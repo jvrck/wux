@@ -1,7 +1,10 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { viewCommand } from "../../commands/view";
+import { validateRunName } from "../../runtime/runs";
+import { renderShellCommand } from "../../runtime/shell";
 import { tmuxSessionName } from "../../runtime/tmux";
+import { sshForwardArgs, sshRawHostForwardArgs } from "../../transport/ssh";
 import { identityFor } from "../target";
 import { resolve, toolResult, type ToolContext } from "./context";
 
@@ -20,6 +23,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
       },
     },
     async ({ name, target }) => {
+      validateRunName(name);
       const resolved = resolve(ctx, target);
 
       if (resolved.local) {
@@ -32,7 +36,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
           ...(result.tmuxCommand !== undefined ? { tmuxCommand: result.tmuxCommand } : {}),
           runDir: result.runDir,
           paneLogPath: result.paneLogPath,
-          attachCommand: `wux attach ${result.name}`,
+          attachCommand: renderShellCommand([resolved.wuxPath, "--local", "attach", result.name]),
           lastInputBy: result.lastInputBy ?? null,
           lastInputAt: result.lastInputAt ?? null,
         });
@@ -41,11 +45,14 @@ export function register(server: McpServer, ctx: ToolContext): void {
       // Remote/host: have the target Wux resolve its metadata when attach runs.
       // Do not invent an ambient raw tmux command here: its socket path is host-local.
       const tmuxSession = tmuxSessionName(name);
+      const attachArgv = resolved.resolveRemoteWux
+        ? sshRawHostForwardArgs(resolved.host as string, ["attach", name], resolved.hostWuxHint ?? "", { tty: true })
+        : sshForwardArgs(resolved.host as string, ["attach", name], resolved.wuxPath, { tty: true });
       return toolResult({
         identity: identityFor(resolved, name, tmuxSession),
         name,
         tmuxTarget: `=${tmuxSession}:`,
-        attachCommand: `ssh -t ${resolved.host as string} wux attach ${name}`,
+        attachCommand: renderShellCommand(attachArgv),
         note: "run dir, pane.log, and last-input are on the remote host; run wux read/list against this target to inspect them",
       });
     },

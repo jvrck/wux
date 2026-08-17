@@ -12,6 +12,8 @@ import type { ResolvedTarget } from "../src/mcp/target";
 import type { SendResult } from "../src/commands/send";
 import { lastInput } from "../src/runtime/events";
 import type { WuxConfig } from "../src/runtime/config";
+import { renderShellCommand } from "../src/runtime/shell";
+import { sshForwardArgs, sshRawHostForwardArgs } from "../src/transport/ssh";
 import { hasTmux, killTmux, tempState } from "./helpers";
 
 function emptyConfig(): WuxConfig {
@@ -257,9 +259,9 @@ describe("mcp tools — full local loop (open → list → send → read → int
       expect(typeof view.structured.tmuxSocketPath).toBe("string");
       expect(view.structured.tmuxTarget).toBe(`=wux_${name}:`);
       expect(view.structured.tmuxCommand).toBe(
-        `tmux -S '${view.structured.tmuxSocketPath}' attach-session -t '=wux_${name}'`,
+        renderShellCommand(["tmux", "-S", view.structured.tmuxSocketPath as string, "attach-session", "-t", `=wux_${name}`]),
       );
-      expect(view.structured.attachCommand).toBe(`wux attach ${name}`);
+      expect(view.structured.attachCommand).toBe(renderShellCommand(["wux", "--local", "attach", name]));
       expect(typeof view.structured.paneLogPath).toBe("string");
       expect(view.structured.lastInputBy).toBe("mcp:wux-tools-test");
       expectIdentity(view.structured, "local", name);
@@ -328,8 +330,14 @@ describe("mcp tools — remote target forwarding", () => {
       // tmuxTarget field and receive a Wux-level attach command.
       const view = await call(harness.client, "view", { name: "r1", target: "work" });
       expect(view.structured.tmuxTarget).toBe("=wux_r1:");
-      expect(view.structured.attachCommand).toBe("ssh -t worker wux attach r1");
+      expect(view.structured.attachCommand).toBe(renderShellCommand(sshForwardArgs("worker", ["attach", "r1"], "/opt/wux", { tty: true })));
+      expect(view.structured.attachCommand).toContain("WUX_FORCE_LOCAL=1");
+      expect(view.structured.attachCommand).toContain("/opt/wux");
       expect(view.structured.tmuxCommand).toBeUndefined();
+
+      const hostile = await call(harness.client, "view", { name: "r1;$(touch /tmp/wux-view-pwn)", target: "work" });
+      expect(hostile.isError).toBe(true);
+      expect(hostile.text).toContain("invalid run name");
     } finally {
       await harness.close();
     }
@@ -409,6 +417,14 @@ describe("mcp tools — raw-host (allowRawHost) forwarding resolves wux on the r
       const forward = calls.find((argv) => argv.includes("raw.example") && argv[argv.length - 1].includes("'read'"));
       expect(forward).toBeDefined();
       assertResolverNotBareWux((forward as string[])[forward!.length - 1]);
+
+      const view = await call(harness.client, "view", { name: "r1", target: "raw.example" });
+      expect(view.structured.attachCommand).toBe(
+        renderShellCommand(sshRawHostForwardArgs("raw.example", ["attach", "r1"], "", { tty: true })),
+      );
+      expect(view.structured.attachCommand).toContain("WUX_FORCE_LOCAL=1");
+      expect(view.structured.tmuxSocketPath).toBeUndefined();
+      expect(view.structured.tmuxCommand).toBeUndefined();
     } finally {
       await harness.close();
     }
@@ -451,6 +467,10 @@ describe("mcp tools — raw-host (allowRawHost) forwarding resolves wux on the r
       expect(forward).toBeDefined();
       // hint lands as the 2nd positional ($2), quoted — never interpolated.
       expect((forward as string[])[forward!.length - 1]).toContain("'wux' 'raw.example' '/opt/wux/bin/wux'");
+      const view = await call(harness.client, "view", { name: "r1", target: "raw.example" });
+      expect(view.structured.attachCommand).toBe(
+        renderShellCommand(sshRawHostForwardArgs("raw.example", ["attach", "r1"], "/opt/wux/bin/wux", { tty: true })),
+      );
     } finally {
       await harness.close();
     }

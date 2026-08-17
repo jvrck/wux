@@ -1,7 +1,7 @@
 import { appendEvent } from "../runtime/events";
 import { currentOwner } from "../runtime/owner";
 import { assertOwner, requireLiveRun } from "../runtime/runs";
-import { interruptSession, socketBoundRunner } from "../runtime/tmux";
+import { connectionForMeta, interruptSession } from "../runtime/tmux";
 
 export interface InterruptOptions {
   name: string;
@@ -21,7 +21,7 @@ export interface InterruptResult {
 export async function interruptCommand(options: InterruptOptions): Promise<InterruptResult> {
   const meta = await requireLiveRun(options.name);
   await assertOwner(meta, options.forceOwner);
-  await interruptSession(meta.tmuxSession, socketBoundRunner(meta.tmuxSocketPath));
+  await interruptSession(meta.tmuxSession, connectionForMeta(meta));
   await appendEvent(meta.name, { type: "interrupt", by: options.actor ?? currentOwner() });
   return { name: meta.name, interrupted: true };
 }

@@ -1,6 +1,6 @@
 import { lastInput } from "../runtime/events";
 import { listRuns, type RunMeta, type RunStatus } from "../runtime/runs";
-import { hasSession, socketBoundRunner } from "../runtime/tmux";
+import { connectionForMeta, hasSession } from "../runtime/tmux";
 
 export type DisplayStatus = RunStatus | "unknown";
 
@@ -29,7 +29,7 @@ export async function statusRows(): Promise<StatusRow[]> {
   const runs = await listRuns();
   const rows = await Promise.all(
     runs.map(async (run) => {
-      const [live, input] = await Promise.all([hasSession(run.tmuxSession, socketBoundRunner(run.tmuxSocketPath)), lastInput(run.name)]);
+      const [live, input] = await Promise.all([hasSession(run.tmuxSession, connectionForMeta(run)), lastInput(run.name)]);
       return {
         name: run.name,
         backend: run.backend,

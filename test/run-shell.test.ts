@@ -95,6 +95,56 @@ describe("shell run lifecycle", () => {
     }
   });
 
+  test("rolls back through the creating connection when socket discovery fails", async () => {
+    if (!(await hasTmux())) return;
+    const realTmux = Bun.which("tmux");
+    if (!realTmux) return;
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("discover-rollback");
+    const decoy = `wux_decoy_${process.pid}_${Date.now()}`;
+    const socketParent = join(temp.root, "rollback-tmux");
+    const bin = join(temp.root, "bin");
+    const fakeTmux = join(bin, "tmux");
+    const callLog = join(temp.root, "tmux-calls.log");
+    const env = {
+      ...process.env,
+      XDG_STATE_HOME: temp.stateHome,
+      TMUX_TMPDIR: socketParent,
+      WUX_REAL_TMUX: realTmux,
+      WUX_TMUX_LOG: callLog,
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+    } as NodeJS.ProcessEnv;
+    delete env.TMUX;
+
+    try {
+      await mkdir(socketParent, { recursive: true });
+      await mkdir(bin, { recursive: true });
+      await writeFile(
+        fakeTmux,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$WUX_TMUX_LOG\"\nfor arg in \"$@\"; do [ \"$arg\" = '#{socket_path}' ] && exit 71; done\nexec \"$WUX_REAL_TMUX\" \"$@\"\n",
+        "utf8",
+      );
+      await chmod(fakeTmux, 0o755);
+      expect((await runProcess([realTmux, "new-session", "-d", "-s", decoy, "sh"], { env })).code).toBe(0);
+
+      await expect(runCommand({ backend: "shell", name, cwd: temp.root, env })).rejects.toThrow("failed to discover tmux socket");
+
+      await expect(stat(join(temp.stateHome, "wux", "runs", name))).rejects.toThrow();
+      expect((await runProcess([realTmux, "has-session", "-t", `=wux_${name}`], { env })).code).not.toBe(0);
+      expect((await runProcess([realTmux, "has-session", "-t", `=${decoy}`], { env })).code).toBe(0);
+      const calls = await readFile(callLog, "utf8");
+      expect(calls).toContain(`display-message -p -t =wux_${name}: -F #{socket_path}`);
+      expect(calls).toContain(`kill-session -t =wux_${name}`);
+      expect(calls).not.toContain("kill-server");
+    } finally {
+      await runProcess([realTmux, "kill-session", "-t", `=${decoy}`], { env });
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
   test("appends backendArgs after the shell executable", async () => {
     expect(shellCommand({ SHELL: "/bin/zsh" })).toEqual(["/bin/zsh"]);
     expect(shellCommand({ SHELL: "/bin/zsh" }, ["-c", "echo hi"])).toEqual(["/bin/zsh", "-c", "echo hi"]);

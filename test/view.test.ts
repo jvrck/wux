@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { viewCommand } from "../src/commands/view";
 import { saveRun } from "../src/runtime/runs";
+import { renderShellCommand } from "../src/runtime/shell";
 import { tempState } from "./helpers";
 
 describe("view", () => {
@@ -21,7 +22,9 @@ describe("view", () => {
       });
       const view = await viewCommand({ name: "quoted-view" });
       expect(view.tmuxTarget).toBe("=wux_quoted-view:");
-      expect(view.tmuxCommand).toBe("tmux -S '/tmp/wux$(id)'\\''quoted/tmux-501/default' attach-session -t '=wux_quoted-view'");
+      expect(view.tmuxCommand).toBe(
+        renderShellCommand(["tmux", "-S", "/tmp/wux$(id)'quoted/tmux-501/default", "attach-session", "-t", "=wux_quoted-view"]),
+      );
     } finally {
       process.env.XDG_STATE_HOME = previous;
       await temp.cleanup();

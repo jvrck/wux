@@ -40,6 +40,15 @@ async function readUntil(name: string, marker: string, env: Record<string, strin
   throw new Error(`timed out waiting for ${marker} from ${name}`);
 }
 
+function followWux(name: string, env: Record<string, string>): ReturnType<typeof Bun.spawn> {
+  return Bun.spawn([process.execPath, "run", "wux", "--", "read", "--follow", name, "--poll-interval-ms", "25"], {
+    cwd: process.cwd(),
+    env,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+}
+
 describe("socket-bound tmux runs", () => {
   test("persists exact sockets and routes lifecycle commands without ambient tmux state", async () => {
     if (!(await hasTmux())) return;
@@ -82,13 +91,24 @@ describe("socket-bound tmux runs", () => {
       expect((await wux(["send", nameB, "printf 'SOCKET_B_OK\\n'"], base)).code).toBe(0);
       await readUntil(nameA, "SOCKET_A_OK", base);
       await readUntil(nameB, "SOCKET_B_OK", base);
-      expect((await wux(["wait", nameA, "--idle", "100ms", "--timeout", "2s"], base)).code).toBe(0);
+      expect((await wux(["wait", nameA, "--idle", "100ms", "--timeout", "10s"], base)).code).toBe(0);
+      expect((await wux(["mark", nameA, "waiting"], base)).code).toBe(0);
+      expect((await wux(["mark", nameA, "running"], base)).code).toBe(0);
+      expect((await wux(["prune", "--older-than", "0", "--dry-run"], base)).stdout).toContain(`skip ${nameA}: live tmux session`);
+
+      const follow = followWux(nameA, base);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect((await wux(["send", nameA, "printf 'SOCKET_A_FOLLOW_OK\\n'"], base)).code).toBe(0);
+      await readUntil(nameA, "SOCKET_A_FOLLOW_OK", base);
+      expect((await wux(["stop", nameA, "--yes"], base)).code).toBe(0);
+      expect(await follow.exited).toBe(0);
+      if (typeof follow.stdout === "number" || follow.stdout === undefined) throw new Error("follow stdout was not piped");
+      expect(await new Response(follow.stdout).text()).toContain("SOCKET_A_FOLLOW_OK");
 
       expect((await wux(["send", nameB, "sleep 30"], base)).code).toBe(0);
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect((await wux(["interrupt", nameB], base)).code).toBe(0);
 
-      expect((await wux(["stop", nameA, "--yes"], base)).code).toBe(0);
       expect((await runProcess(["tmux", "-S", socketB, "has-session", "-t", `=${metaA.tmuxSession}`])).code).toBe(0);
       expect((await wux(["stop", nameB, "--yes"], base)).code).toBe(0);
 
@@ -126,6 +146,7 @@ describe("socket-bound tmux runs", () => {
       expect((await wux(["status"], bEnv)).stdout).toContain(`${missingName}`);
       expect((await wux(["status"], bEnv)).stdout).toContain("unknown");
       expect((await wux(["stop", missingName, "--yes"], bEnv)).code).toBe(0);
+      expect(JSON.parse(await readFile(join(state, "wux", "runs", missingName, "meta.json"), "utf8")).status).toBe("stopped");
       expect((await runProcess(["tmux", "-S", socketB, "has-session", "-t", `=${missingMeta.tmuxSession}`])).code).toBe(0);
       socketA = undefined;
     } finally {

@@ -1,4 +1,5 @@
 import { runInteractiveProcess, runProcess, type ProcessResult } from "../runtime/process";
+import { renderShellCommand } from "../runtime/shell";
 
 type Writer = { write(chunk: string): unknown };
 
@@ -125,7 +126,7 @@ function positiveIntEnv(name: string, fallback: number): number {
 }
 
 export function remoteCommand(args: string[]): string {
-  return args.map(shellQuote).join(" ");
+  return renderShellCommand(args);
 }
 
 export function stripTargetArgs(rawArgs: string[]): string[] {
@@ -158,8 +159,4 @@ export function stripTargetArgs(rawArgs: string[]): string[] {
   }
 
   return forwarded;
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
 }

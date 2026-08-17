@@ -1,7 +1,7 @@
 import { appendEvent } from "../runtime/events";
 import { currentOwner } from "../runtime/owner";
 import { assertOwner, requireLiveRun } from "../runtime/runs";
-import { capturePane, sendLiteral, socketBoundRunner, type Submission } from "../runtime/tmux";
+import { capturePane, connectionForMeta, sendLiteral, type Submission } from "../runtime/tmux";
 
 export interface SendOptions {
   name: string;
@@ -22,11 +22,11 @@ export interface SendResult {
 export async function sendCommand(options: SendOptions): Promise<SendResult> {
   const meta = await requireLiveRun(options.name);
   await assertOwner(meta, options.forceOwner);
-  const runner = socketBoundRunner(meta.tmuxSocketPath);
+  const connection = connectionForMeta(meta);
   const submit = await sendLiteral(meta.tmuxSession, options.text, {
     backend: meta.backend,
-    runner,
-    capture: (session, tail) => capturePane(session, tail, runner),
+    connection,
+    capture: (session, tail) => capturePane(session, tail, connection),
   });
   const bytes = Buffer.byteLength(options.text);
   await appendEvent(meta.name, { type: "send", bytes, submission: submit.submission, retried: submit.retried, by: options.actor ?? currentOwner() });

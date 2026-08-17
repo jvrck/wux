@@ -4,7 +4,7 @@ import { StringDecoder } from "node:string_decoder";
 import { WuxError } from "../runtime/errors";
 import { loadRun as loadRunMeta, requireLiveRun } from "../runtime/runs";
 import { runDir } from "../runtime/state";
-import { capturePane, hasSession as hasTmuxSession, socketBoundRunner } from "../runtime/tmux";
+import { capturePane, connectionForMeta, hasSession as hasTmuxSession } from "../runtime/tmux";
 
 export interface ReadOptions {
   name: string;
@@ -56,7 +56,7 @@ export async function readRun(options: ReadOptions): Promise<string> {
   }
 
   const meta = await requireLiveRun(options.name);
-  return capturePane(meta.tmuxSession, tail, socketBoundRunner(meta.tmuxSocketPath));
+  return capturePane(meta.tmuxSession, tail, connectionForMeta(meta));
 }
 
 // Structured read result for the MCP layer. The CLI text path uses `readRun`
@@ -84,7 +84,8 @@ export async function followRead(options: FollowReadOptions): Promise<FollowRead
   const loadRun = options.loadRun ?? loadRunMeta;
   const sleep = options.sleep ?? delay;
   const meta = await loadRun(options.name);
-  const hasSession = options.hasSession ?? ((session: string) => hasTmuxSession(session, socketBoundRunner(meta.tmuxSocketPath)));
+  const connection = connectionForMeta(meta);
+  const hasSession = options.hasSession ?? ((session: string) => hasTmuxSession(session, connection));
   const paneLogPath = join(runDir(meta.name), "pane.log");
   const decoder = new StringDecoder("utf8");
   let offset = await fileSize(paneLogPath);

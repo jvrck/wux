@@ -6,8 +6,7 @@ import { appendEvent } from "../runtime/events";
 import { WuxError } from "../runtime/errors";
 import { createRunMeta, saveRun, type RunBackend } from "../runtime/runs";
 import { runDir, runsRoot } from "../runtime/state";
-import { createSession, discoverSocketPath, hasSession, killSession } from "../runtime/tmux";
-import { runProcess } from "../runtime/process";
+import { ambientTmuxConnection, createSession, discoverSocketPath, hasSession, killSession } from "../runtime/tmux";
 
 export type { RunBackend } from "../runtime/runs";
 
@@ -39,8 +38,8 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
   // SHELL, for example). Apply that overlay once so every creation-adjacent tmux
   // command sees the same TMUX/TMUX_TMPDIR selection as new-session.
   const tmuxEnv = options.env ? { ...process.env, ...options.env } : undefined;
-  const runner = (args: string[]) => runProcess(args, { env: tmuxEnv });
-  if (await hasSession(meta.tmuxSession, runner)) {
+  const connection = ambientTmuxConnection({ env: tmuxEnv });
+  if (await hasSession(meta.tmuxSession, connection)) {
     throw new WuxError(`tmux session already exists: ${meta.tmuxSession}`);
   }
 
@@ -59,23 +58,36 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
     const paneLog = join(dir, "pane.log");
     await touch(paneLog);
     await touch(join(dir, "events.jsonl"));
-    await createSession({ session: meta.tmuxSession, cwd: meta.cwd, command, logPath: paneLog, env: tmuxEnv, runner });
+    await createSession({ session: meta.tmuxSession, cwd: meta.cwd, command, logPath: paneLog, env: tmuxEnv, connection });
     sessionCreated = true;
-    // Socket binding augments new metadata, but a discovery failure must not
-    // turn a successfully created durable run into a rollback. Legacy metadata
-    // already uses ambient routing when this optional field is absent.
-    const tmuxSocketPath = await discoverSocketPath(meta.tmuxSession, runner).catch(() => undefined);
+    const tmuxSocketPath = await discoverSocketPath(meta.tmuxSession, connection);
     await saveRun({ ...meta, tmuxSocketPath });
     await appendEvent(meta.name, { type: "create", backend: meta.backend, owner: meta.owner });
   } catch (error) {
-    if (sessionCreated && (await hasSession(meta.tmuxSession, runner))) {
-      await killSession(meta.tmuxSession, runner).catch(() => undefined);
+    const rollbackErrors: unknown[] = [];
+    if (sessionCreated) {
+      try {
+        await killSession(meta.tmuxSession, connection);
+      } catch (rollbackFailure) {
+        rollbackErrors.push(rollbackFailure);
+      }
     }
-    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    try {
+      await rm(dir, { recursive: true, force: true });
+    } catch (rollbackFailure) {
+      rollbackErrors.push(rollbackFailure);
+    }
+    if (rollbackErrors.length > 0) {
+      throw new WuxError(`${errorMessage(error)}; rollback failed: ${rollbackErrors.map(errorMessage).join("; ")}`);
+    }
     throw error;
   }
 
   return { name: meta.name, backend: meta.backend, tmuxSession: meta.tmuxSession, cwd: meta.cwd, runDir: dir };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function touch(path: string): Promise<void> {

@@ -1,7 +1,9 @@
 import { join } from "node:path";
 import { lastInput } from "../runtime/events";
 import { loadRun } from "../runtime/runs";
+import { renderShellCommand } from "../runtime/shell";
 import { runDir } from "../runtime/state";
+import { connectionForMeta, tmuxArgv } from "../runtime/tmux";
 
 export interface ViewOptions {
   name: string;
@@ -26,6 +28,7 @@ export interface ViewResult {
 
 export async function viewCommand(options: ViewOptions): Promise<ViewResult> {
   const meta = await loadRun(options.name);
+  const connection = connectionForMeta(meta);
   const dir = runDir(meta.name);
   const input = await lastInput(meta.name);
   return {
@@ -33,16 +36,12 @@ export async function viewCommand(options: ViewOptions): Promise<ViewResult> {
     tmuxSession: meta.tmuxSession,
     ...(meta.tmuxSocketPath !== undefined ? { tmuxSocketPath: meta.tmuxSocketPath } : {}),
     tmuxTarget: `=${meta.tmuxSession}:`,
-    ...(meta.tmuxSocketPath !== undefined
-      ? { tmuxCommand: `tmux -S ${shellQuote(meta.tmuxSocketPath)} attach-session -t ${shellQuote(`=${meta.tmuxSession}`)}` }
+    ...(connection.socketPath !== undefined
+      ? { tmuxCommand: renderShellCommand(tmuxArgv(connection, ["attach-session", "-t", `=${meta.tmuxSession}`])) }
       : {}),
     runDir: dir,
     paneLogPath: join(dir, "pane.log"),
     lastInputBy: input.lastInputBy,
     lastInputAt: input.lastInputAt,
   };
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
 }

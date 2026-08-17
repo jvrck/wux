@@ -33,7 +33,7 @@ hosts. **Mutations** (`open`/`send`/`interrupt`/`stop`) require an explicit
 | `read` | observation | `name`, `target?`, `tail?` | Return a **labeled pane capture** (raw TUI, may be truncated); for a local target it also includes `pane.log` / run-dir paths. |
 | `interrupt` | mutation | `name`, `target`, `forceOwner?` | Send a single `C-c` to a run's current turn. |
 | `stop` | mutation | `name`, `target`, `yes:true` | Stop a run (destructive; requires `yes:true`). |
-| `view` | observation | `name`, `target?` | How to watch live: stable tmux target, run dir, `pane.log`, and the exact `wux attach` / `ssh -t … wux attach` command. Local socket-bound runs also include a POSIX-shell-safe `tmuxCommand`. |
+| `view` | observation | `name`, `target?` | How to watch live: stable tmux target, run dir, `pane.log`, and a POSIX-shell-safe attach command. Local hints explicitly select `--local`; remote hints use the normal named-remote/raw-host SSH builder. Local socket-bound runs also include a safe `tmuxCommand`. |
 
 Tool and server descriptions frame wux as *inspectable durable TUI session
 control*, not autonomous task execution.
@@ -156,7 +156,10 @@ no secret redaction, and no autonomous turn I/O / `wux wait` runtime.
 ## Socket-bound runs
 
 The local MCP tools load run metadata before touching tmux, so runs created by
-current Wux are addressed through their persisted exact tmux socket. Remote MCP
-calls forward the Wux command to the target host; they never copy a target-host
-socket path to the caller. Legacy metadata without a socket continues to use the
-target process's ambient tmux behavior.
+current Wux are addressed through their persisted exact tmux socket. `view`
+renders a validated argv: local hints include `--local`, while named-remote and
+raw-host hints use the configured/resolved Wux executable, allocate an SSH TTY,
+and set `WUX_FORCE_LOCAL=1` on the target. That target-side guard prevents a
+configured default remote there from forwarding the attach again. Remote MCP
+results never copy a target-host socket path to the caller. Legacy metadata
+without a socket continues to use the target process's ambient tmux behavior.
