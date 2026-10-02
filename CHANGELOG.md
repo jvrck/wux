@@ -10,6 +10,24 @@ intentionally not reproduced here.
 
 ## Unreleased
 
+## 2026.10.03
+
+No breaking changes.
+
+### Security
+
+- Updated transitive dependencies to patched releases, resolving advisories in
+  fast-uri, hono, body-parser, qs, and ip-address.
+
+### Dependencies and compatibility
+
+- Updated the Model Context Protocol SDK to 1.32, Zod to 4.6, and Bun type
+  definitions to 1.4.
+- `wux mcp`: with SDK 1.32, a tools/call request that omits arguments is now
+  treated as an empty arguments object (tools with required inputs still reject
+  it); tool names and input schemas are unchanged.
+- Updated CI and release workflows to `actions/checkout` v6.1.0.
+
 ## 2026.08.17
 
 ### Fixed
