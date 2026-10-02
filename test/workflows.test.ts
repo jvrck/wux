@@ -23,7 +23,7 @@ describe("GitHub workflows", () => {
     expect(text).not.toContain("actions/checkout@v4");
     expect(text).not.toContain("actions/upload-artifact@v4");
     expect(text).not.toContain("actions/download-artifact@v4");
-    expect(text).toContain("actions/checkout@v6.0.3");
+    expect(text).toContain("actions/checkout@v6.1.0");
     // upload-artifact is still pinned where it survives (e2e/security failure
     // diagnostics). download-artifact is no longer invoked anywhere: release.yml
     // carries binaries as draft-release assets, so the action is fully removed
