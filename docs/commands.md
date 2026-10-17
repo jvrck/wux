@@ -299,9 +299,8 @@ explicit hook/sentinel evidence persists `timeout`. Grok never replays a
 quiescence completion.
 
 `turnId`, `lastAssistantMessage`, and `signalAt` come from the latest
-`backend-signal` event and are present only for `claude`/`codex` turns. Shell runs
-legitimately have no assistant message or turn id, so those fields are omitted —
-never fabricated.
+`backend-signal` event from a wired `claude`/`codex` hook. Grok normally has no
+wired hook, and shell has none, so those fields are omitted — never fabricated.
 
 `runDir`, `paneLogPath`, and `eventsPath` are always-present pointers;
 `sentinelPath` (`runDir/turn-complete`) is present only when that file exists.

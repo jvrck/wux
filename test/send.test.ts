@@ -156,6 +156,21 @@ describe("send", () => {
 });
 
 describe("classifySubmission", () => {
+  test("Grok fixtures document best-effort submission without a readiness gate", async () => {
+    const fixture = async (name: string) => readFile(join(import.meta.dir, "fixtures", "composer", name), "utf8");
+    const [startup, busy, rest] = await Promise.all([fixture("grok-startup.txt"), fixture("grok-busy.txt"), fixture("grok-rest.txt")]);
+    const text = "Reply exactly READY.";
+
+    expect(startup).toContain("Grok Build  1.0.62");
+    expect(busy).toContain("Waiting for response…");
+    expect(rest).toContain("READY");
+    // Grok stays off the readiness gate: the shared post-send heuristic can
+    // report submitted even while its real busy frame is visible, so callers
+    // must treat the verdict as best-effort and gate on wait/ground truth.
+    expect(classifySubmission(startup, busy, text, "grok")).toBe("submitted");
+    expect(classifySubmission(busy, rest, text, "grok")).toBe("submitted");
+  });
+
   test("shell always classifies as submitted", () => {
     expect(classifySubmission("", "", "echo hi", "shell")).toBe("submitted");
   });

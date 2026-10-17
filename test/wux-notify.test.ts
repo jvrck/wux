@@ -12,6 +12,27 @@ function uniqueRunName(prefix: string): string {
 }
 
 describe("wux-notify", () => {
+  test("bare calls keep the legacy turn-complete signal for wired backends", async () => {
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    try {
+      for (const backend of ["claude", "codex"] as const) {
+        const name = uniqueRunName(`notify-bare-${backend}`);
+        await saveRun({ name, backend, tmuxSession: `wux_${name}`, cwd: "/tmp", owner: "tester@host", createdAt: new Date().toISOString(), status: "running" });
+        const code = await runNotifyCli([name], {
+          stdin: JSON.stringify({ type: "permission-request", turnId: `${backend}-turn` }),
+          stderr: { write: () => undefined },
+        });
+        expect(code).toBe(0);
+        expect(await readLatestBackendSignal(name)).toMatchObject({ signal: "turn-complete", turnId: `${backend}-turn` });
+      }
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
   test("rejects Grok payloads without an explicit signal", async () => {
     const temp = await tempState();
     const old = process.env.XDG_STATE_HOME;
@@ -24,8 +45,26 @@ describe("wux-notify", () => {
         const code = await runNotifyCli([name, JSON.stringify({ hookEventName })], { stderr: { write: (chunk: string) => writes.push(chunk) } });
         expect(code).toBe(1);
       }
+      expect(await runNotifyCli([name], { stdin: JSON.stringify({ type: "permission-request" }), stderr: { write: (chunk: string) => writes.push(chunk) } })).toBe(1);
       expect(await readLatestBackendSignal(name)).toBeUndefined();
       expect(writes.join("")).toContain("explicit signal");
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("accepts explicit Grok completion and approval signals", async () => {
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    try {
+      for (const signal of ["turn-complete", "awaiting-approval"] as const) {
+        const name = uniqueRunName(`notify-grok-${signal}`);
+        await saveRun({ name, backend: "grok", tmuxSession: `wux_${name}`, cwd: "/tmp", owner: "tester@host", createdAt: new Date().toISOString(), status: "running" });
+        expect(await runNotifyCli([name, signal], { stderr: { write: () => undefined } })).toBe(0);
+        expect(await readLatestBackendSignal(name)).toMatchObject({ signal });
+      }
     } finally {
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();

@@ -69,6 +69,7 @@ export interface DoctorReport {
 // claude/codex/grok/cwd/version are advisory (warn, never fail the host).
 const REMOTE_CRITICAL = ["ssh", "wux", "tmux"];
 const LOCAL_CRITICAL = ["wux", "tmux"];
+const GROK_VERSION_TIMEOUT_MS = 5_000;
 
 export async function remotesCommand(args: string[], io: RemotesIO, deps: RemotesDeps = {}): Promise<void> {
   const command = args.shift();
@@ -207,7 +208,9 @@ async function doctorRemote(args: string[], io: RemotesIO, deps: RemotesDeps): P
   const config = await loadConfig();
   // Bound the command timeout on the real path so a connected-but-wedged remote
   // cannot stall the report; an injected runner (tests) supplies its own behavior.
-  const runner: SshRunner = deps.sshRunner ?? ((argv) => runProcess(argv, { timeoutMs: forwardTimeoutMs() }));
+  const runner: SshRunner =
+    deps.sshRunner ??
+    ((argv) => runProcess(argv, { timeoutMs: isGrokVersionProbe(argv) ? GROK_VERSION_TIMEOUT_MS : forwardTimeoutMs() }));
 
   const entries: { name: string; report: DoctorReport }[] = [];
   if (all) {
@@ -315,16 +318,24 @@ async function localPresence(name: string): Promise<DoctorCheck> {
 async function localPresenceWithVersion(name: string): Promise<DoctorCheck> {
   const resolved = await resolveExecutable(name);
   if (!resolved) return { label: name, ok: false, detail: "not found" };
-  const version = await runProcess([resolved, "--version"]);
+  const version = await runProcess([resolved, "--version"], { timeoutMs: GROK_VERSION_TIMEOUT_MS });
   const versionText = version.code === 0 ? version.stdout.trim() : "version unavailable";
   return { label: name, ok: true, detail: `${resolved}${versionText.length > 0 ? ` (${versionText})` : ""}` };
 }
 
 async function remotePresenceWithVersion(host: string, name: string, runner: SshRunner): Promise<DoctorCheck> {
-  const result = await runner(sshRemoteArgs(host, ["sh", "-lc", `command -v ${name} && ${name} --version`]));
-  if (result.code !== 0) return { label: name, ok: false, detail: "not found" };
-  const detail = result.stdout.trim().replaceAll("\n", " ");
-  return { label: name, ok: true, ...(detail.length > 0 ? { detail } : {}) };
+  // Match the non-interactive SSH PATH used by the other backend checks and by
+  // a forwarded `wux run`; a profile/login shell could report a false positive.
+  const resolved = await runner(sshRemoteArgs(host, ["command", "-v", name]));
+  if (resolved.code !== 0) return { label: name, ok: false, detail: "not found" };
+  const path = resolved.stdout.trim().split("\n")[0] || name;
+  const version = await runner(sshRemoteArgs(host, [name, "--version"]));
+  const versionText = version.code === 0 ? version.stdout.trim().replaceAll("\n", " ") : "version unavailable";
+  return { label: name, ok: true, detail: `${path} (${versionText})` };
+}
+
+function isGrokVersionProbe(argv: string[]): boolean {
+  return argv.at(-1) === "'grok' '--version'";
 }
 
 function renderReport(name: string, report: DoctorReport): string {

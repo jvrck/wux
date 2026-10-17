@@ -145,7 +145,7 @@ autonomous loop can wait and collect the result in one call.
 
 Prints a backend-agnostic result envelope composed read-only from existing run
 state: outcome, completedVia, the worker's last turnId/lastAssistantMessage
-(claude/codex/grok only — omitted for shell), and pointers (runDir, paneLogPath,
+(from wired claude/codex hooks; normally omitted for grok and shell), and pointers (runDir, paneLogPath,
 eventsPath, sentinelPath) the operator follows for out-of-band ground truth.
 It is a snapshot, not a blocker; pair it with 'wux wait'. Exit code mirrors
 outcome (done -> 0, else nonzero). wux owns the schema, never the content:

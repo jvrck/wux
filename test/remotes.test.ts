@@ -163,7 +163,8 @@ describe("remotes command", () => {
         ["ssh", ...SSH_OPTS, "--", "worker", "'tmux' '-V'"],
         ["ssh", ...SSH_OPTS, "--", "worker", "'command' '-v' 'claude'"],
         ["ssh", ...SSH_OPTS, "--", "worker", "'command' '-v' 'codex'"],
-        ["ssh", ...SSH_OPTS, "--", "worker", "'sh' '-lc' 'command -v grok && grok --version'"],
+        ["ssh", ...SSH_OPTS, "--", "worker", "'command' '-v' 'grok'"],
+        ["ssh", ...SSH_OPTS, "--", "worker", "'grok' '--version'"],
         ["ssh", ...SSH_OPTS, "--", "worker", "'test' '-d' '/tmp'"],
       ]);
       expect(memory.output().stdout).toContain("ssh: ok");
@@ -180,9 +181,11 @@ describe("remotes command", () => {
       const code = await runCli(["remotes", "doctor", "work", "--json"], memory.io, {
         sshRunner: async (args) => {
           const cmd = args[args.length - 1];
+          if (cmd === "'grok' '--version'") return { code: 0, stdout: "grok 1.0.62\nbuild 1474f9\n", stderr: "" };
           if (cmd.includes("'--version'")) return { code: 0, stdout: "2099.01.02\n", stderr: "" };
           if (cmd.includes("'tmux' '-V'")) return { code: 0, stdout: "tmux 3.4\n", stderr: "" };
           if (cmd.includes("'codex'")) return { code: 1, stdout: "", stderr: "not found" };
+          if (cmd === "'command' '-v' 'grok'") return { code: 0, stdout: "/usr/local/bin/grok\n", stderr: "" };
           return { code: 0, stdout: "ok\n", stderr: "" };
         },
       });
@@ -204,7 +207,7 @@ describe("remotes command", () => {
       expect(codex.ok).toBe(false);
       const grok = report.checks.find((check: { label: string }) => check.label === "grok");
       expect(grok.ok).toBe(true);
-      expect(grok.detail).toContain("ok");
+      expect(grok.detail).toBe("/usr/local/bin/grok (grok 1.0.62 build 1474f9)");
       expect(report.ready).toBe(true);
       // Frozen §4: exact DoctorReport key set, and each DoctorCheck only carries label/ok/detail.
       expect(Object.keys(report).sort()).toEqual([
@@ -227,6 +230,30 @@ describe("remotes command", () => {
     });
   });
 
+  test("doctor keeps a resolved remote Grok advisory when its version is unavailable", async () => {
+    await withConfig(async () => {
+      await run(["remotes", "add", "work", "worker"]);
+      const memory = memoryIO();
+      const code = await runCli(["remotes", "doctor", "work", "--json"], memory.io, {
+        sshRunner: async (args) => {
+          const cmd = args[args.length - 1];
+          if (cmd === "'command' '-v' 'grok'") return { code: 0, stdout: "/opt/grok/bin/grok\n", stderr: "" };
+          if (cmd === "'grok' '--version'") return { code: 124, stdout: "", stderr: "timed out" };
+          return { code: 0, stdout: "ok\n", stderr: "" };
+        },
+      });
+
+      expect(code).toBe(0);
+      const report = JSON.parse(memory.output().stdout);
+      expect(report.checks.find((check: { label: string }) => check.label === "grok")).toEqual({
+        label: "grok",
+        ok: true,
+        detail: "/opt/grok/bin/grok (version unavailable)",
+      });
+      expect(report.ready).toBe(true);
+    });
+  });
+
   test("doctor reports every check and exits non-zero when a critical check fails", async () => {
     await withConfig(async () => {
       await run(["remotes", "add", "work", "worker"]);
@@ -245,7 +272,7 @@ describe("remotes command", () => {
       // Not fail-fast: claude/codex checks still ran after the failed tmux check.
       expect(seen.some((cmd) => cmd.includes("'claude'"))).toBe(true);
       expect(seen.some((cmd) => cmd.includes("'codex'"))).toBe(true);
-      expect(seen.some((cmd) => cmd.includes("grok --version"))).toBe(true);
+      expect(seen.some((cmd) => cmd === "'grok' '--version'")).toBe(true);
       expect(memory.output().stdout).toContain("tmux: FAILED");
       expect(memory.output().stdout).toContain("ready: no");
       expect(memory.output().stderr).toContain("not ready: work");
