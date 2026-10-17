@@ -10,6 +10,10 @@ intentionally not reproduced here.
 
 ## Unreleased
 
+## 2026.10.17
+
+No breaking changes.
+
 ### Added
 
 - Added the durable `grok` backend, including MCP open support and advisory Grok
