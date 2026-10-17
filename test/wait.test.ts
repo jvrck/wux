@@ -196,6 +196,26 @@ describe("wait", () => {
     expect(activityCalls).toBe(0);
   });
 
+  test("a quiet grok pane times out rather than reporting quiescence", async () => {
+    const time = clock();
+    const result = await waitCommand({
+      name: "grok-quiet",
+      idleMs: 500,
+      timeoutMs: 1_000,
+      pollIntervalMs: 250,
+      now: time.now,
+      sleep: time.sleep,
+      loadRun: async () => ({ name: "grok-quiet", tmuxSession: "wux_grok_quiet", backend: "grok" }),
+      hasSession: async () => true,
+      capturePane: async () => "idle grok composer\n",
+      appendSettled: async () => undefined,
+      readTurnInputAt: async () => null,
+    });
+
+    expect(result).toMatchObject({ name: "grok-quiet", outcome: "timeout" });
+    expect(result.completedVia).toBeUndefined();
+  });
+
   test("times out without completedVia when frames keep changing", async () => {
     const time = clock();
     let frame = 0;

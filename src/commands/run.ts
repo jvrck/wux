@@ -96,7 +96,9 @@ async function touch(path: string): Promise<void> {
 }
 
 function backendHooks(backend: RunBackend, runName: string, env: NodeJS.ProcessEnv = process.env): { notifyCommand?: string[] } {
-  if (backend === "shell") return {};
+  // Grok has no verified per-run hook injection (see backends/grok.ts). Do not
+  // mutate global or project Grok config to manufacture one.
+  if (backend === "shell" || backend === "grok") return {};
   return { notifyCommand: notifyCommand(runName, env) };
 }
 

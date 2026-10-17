@@ -20,7 +20,7 @@ export interface McpServerOptions {
 }
 
 const SERVER_INSTRUCTIONS =
-  "wux MCP: inspectable durable TUI session control for durable claude/codex/shell " +
+  "wux MCP: inspectable durable TUI session control for durable claude/codex/grok/shell " +
   "tmux sessions (local or over SSH) that stay human-attachable. This is NOT " +
   "autonomous task execution; read is a labeled pane capture, not structured turn " +
   "output. Tools: open, list, send, read, interrupt, stop, view — call tools/list.";

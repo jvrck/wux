@@ -1,6 +1,10 @@
 #!/usr/bin/env bun
 
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { appendBackendSignal, type BackendSignal } from "../runtime/events";
+import { loadRun } from "../runtime/runs";
+import { runDir } from "../runtime/state";
 
 type Writer = { write(chunk: string): unknown };
 
@@ -27,6 +31,19 @@ export async function runNotifyCli(args: string[], options: NotifyCliOptions = {
   try {
     const stdinPayload = parsedArgs.payload === undefined ? parsePayload(options.stdin ?? (await readStdin())) : undefined;
     const payload = parsedArgs.payload ?? stdinPayload;
+    // Preserve the helper's historical ability to receive a notification before
+    // run metadata is visible (and the direct unit-test seam), but surface any
+    // malformed existing metadata rather than hiding it as a missing run.
+    const metaPath = join(runDir(runName), "meta.json");
+    const meta = existsSync(metaPath) ? await loadRun(runName) : undefined;
+    // Grok has no wux-installed lifecycle hook. Never guess from a
+    // hook-shaped payload: Notification, PermissionDenied, SubagentStop and
+    // unknown events are not proof that the current turn completed. A composed
+    // operator hook must deliberately pass `turn-complete` or
+    // `awaiting-approval` as an argument.
+    if (meta?.backend === "grok" && !parsedArgs.explicitSignal) {
+      throw new Error("grok notifications require an explicit signal");
+    }
     await appendBackendSignal(runName, {
       signal: parsedArgs.signal ?? signalFromPayload(payload) ?? "turn-complete",
       turnId: firstStringField(payload, ["turnId", "turn_id", "turn-id"]),
@@ -47,11 +64,13 @@ export async function runNotifyCli(args: string[], options: NotifyCliOptions = {
   }
 }
 
-function parseNotifyArgs(args: string[]): { signal?: BackendSignal; payload?: unknown; error?: boolean } {
+function parseNotifyArgs(args: string[]): { signal?: BackendSignal; payload?: unknown; explicitSignal?: boolean; error?: boolean } {
   const first = args[0];
-  if (first === undefined) return { signal: "turn-complete" };
+  // Keep the pre-Grok contract: a bare helper invocation means completion,
+  // regardless of any hook payload supplied on stdin.
+  if (first === undefined) return { signal: "turn-complete", explicitSignal: false };
   const signal = normalizeSignal(first);
-  if (signal) return { signal };
+  if (signal) return { signal, explicitSignal: true };
   const payload = parsePayload(first);
   if (payload !== undefined) return { payload };
   return { error: true };

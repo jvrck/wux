@@ -3,7 +3,7 @@
 `wux mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io) server
 over **stdio** so an operator's MCP client — Claude Code, the Claude desktop app,
 Codex CLI, or the Codex desktop app — can open, observe, steer, interrupt, and stop
-durable `claude`/`codex`/`shell` tmux sessions from inside its own UI, local or
+durable `claude`/`codex`/`grok`/`shell` tmux sessions from inside its own UI, local or
 across an SSH-reachable fleet.
 
 It is **stdio + local to the client**: each client spawns its own `wux mcp` child
@@ -27,7 +27,7 @@ hosts. **Mutations** (`open`/`send`/`interrupt`/`stop`) require an explicit
 
 | Tool | Kind | Args | What it does |
 | --- | --- | --- | --- |
-| `open` | mutation | `backend`, `name`, `cwd`, `target` | Open a durable session (`run`). `name`/`cwd` required. |
+| `open` | mutation | `backend` (`shell` \| `claude` \| `codex` \| `grok`), `name`, `cwd`, `target` | Open a durable session (`run`). `name`/`cwd` required. |
 | `list` | observation | `target?`, `name?` | List runs with status, owner, and `lastInputBy`/`lastInputAt`. |
 | `send` | mutation | `name`, `text`, `target`, `forceOwner?` | Send text + Enter; returns an honest `submission` verdict (`submitted`/`uncertain`/`not-submitted`) — a non-`submitted` result is a **warning**, never a clean success. |
 | `read` | observation | `name`, `target?`, `tail?` | Return a **labeled pane capture** (raw TUI, may be truncated); for a local target it also includes `pane.log` / run-dir paths. |

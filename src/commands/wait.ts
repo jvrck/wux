@@ -202,7 +202,7 @@ export async function waitCommand(options: WaitOptions): Promise<WaitResult> {
     }
     lastSampleAt = observedAt;
 
-    if (idleAccumulatedMs >= idleMs) {
+    if (idleAccumulatedMs >= idleMs && meta.backend !== "grok") {
       // Pane silence != process idle. A silent-but-busy shell run (e.g.
       // `yes > /dev/null`, a compute writing only to a file) leaves the pane
       // byte-static, so frame-hash quiescence alone would falsely report `done`.

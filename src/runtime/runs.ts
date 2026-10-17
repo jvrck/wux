@@ -6,7 +6,7 @@ import { currentOwner } from "./owner";
 import { runDir, runsRoot } from "./state";
 import { connectionForMeta, probeSession, tmuxSessionName, unavailableTmuxMessage } from "./tmux";
 
-export type RunBackend = "shell" | "claude" | "codex";
+export type RunBackend = "shell" | "claude" | "codex" | "grok";
 export type RunStatus = "running" | "waiting" | "blocked" | "stopped";
 export type MarkStatus = RunStatus;
 

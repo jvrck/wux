@@ -40,7 +40,7 @@ wux result job7 --json | jq '{outcome, completedVia, lastAssistantMessage}'
 
 `result` answers *what did it produce?*; `wait` answers *did it finish?*; `read`
 returns a labelled pane scrape. The envelope carries `outcome`, `completedVia`,
-and (for `claude`/`codex`) the worker's `lastAssistantMessage`/`turnId`, plus
+and (for `claude`/`codex`, or an explicitly signalled Grok hook) the worker's `lastAssistantMessage`/`turnId`, plus
 `runDir`/`paneLogPath`/`eventsPath`/`sentinelPath` **pointers**. Those pointers
 are the boundary: wux owns the schema, you own the ground truth. There are no
 git/gh/PR/test connectors — `lastAssistantMessage` is a hint to branch on, never
@@ -104,6 +104,18 @@ wux send <run> 'implement the change, then say DONE'
 If claude is launched with `⏵⏵ bypass permissions` mode, it will not pause for
 per-tool approval; like codex YOLO mode, that is a launched-session property to
 **observe** in the banner, not a wux-granted state.
+
+### grok first launch
+
+Grok can show OAuth sign-in, folder trust, `/hooks-trust`, or update UI before
+its composer is ready. Wux performs no screen detection or auto-acceptance:
+start it, inspect it with `read`, handle the state manually, then send the task.
+Grok is deliberately not in the composer readiness gate; its `send` verdict is
+best-effort. Its completion ladder is **explicit hook > sentinel > timeout** —
+never quiescence. This release has no wux-managed Grok hook, so use a cooperative
+sentinel or an externally configured hook that explicitly calls `wux notify
+<run> turn-complete`; raw Grok `Notification`, permission, and subagent events
+are not completion evidence.
 
 ### `send` ergonomics
 

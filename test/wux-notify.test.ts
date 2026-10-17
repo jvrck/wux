@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { runCli } from "../src/cli";
 import { runNotifyCli } from "../src/bin/wux-notify";
 import { readLatestBackendSignal } from "../src/runtime/events";
+import { saveRun } from "../src/runtime/runs";
 import { tempState } from "./helpers";
 
 function uniqueRunName(prefix: string): string {
@@ -11,6 +12,65 @@ function uniqueRunName(prefix: string): string {
 }
 
 describe("wux-notify", () => {
+  test("bare calls keep the legacy turn-complete signal for wired backends", async () => {
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    try {
+      for (const backend of ["claude", "codex"] as const) {
+        const name = uniqueRunName(`notify-bare-${backend}`);
+        await saveRun({ name, backend, tmuxSession: `wux_${name}`, cwd: "/tmp", owner: "tester@host", createdAt: new Date().toISOString(), status: "running" });
+        const code = await runNotifyCli([name], {
+          stdin: JSON.stringify({ type: "permission-request", turnId: `${backend}-turn` }),
+          stderr: { write: () => undefined },
+        });
+        expect(code).toBe(0);
+        expect(await readLatestBackendSignal(name)).toMatchObject({ signal: "turn-complete", turnId: `${backend}-turn` });
+      }
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("rejects Grok payloads without an explicit signal", async () => {
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("notify-grok");
+    const writes: string[] = [];
+    try {
+      await saveRun({ name, backend: "grok", tmuxSession: `wux_${name}`, cwd: "/tmp", owner: "tester@host", createdAt: new Date().toISOString(), status: "running" });
+      for (const hookEventName of ["Notification", "PermissionDenied", "SubagentStop", "UnknownEvent"]) {
+        const code = await runNotifyCli([name, JSON.stringify({ hookEventName })], { stderr: { write: (chunk: string) => writes.push(chunk) } });
+        expect(code).toBe(1);
+      }
+      expect(await runNotifyCli([name], { stdin: JSON.stringify({ type: "permission-request" }), stderr: { write: (chunk: string) => writes.push(chunk) } })).toBe(1);
+      expect(await readLatestBackendSignal(name)).toBeUndefined();
+      expect(writes.join("")).toContain("explicit signal");
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("accepts explicit Grok completion and approval signals", async () => {
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    try {
+      for (const signal of ["turn-complete", "awaiting-approval"] as const) {
+        const name = uniqueRunName(`notify-grok-${signal}`);
+        await saveRun({ name, backend: "grok", tmuxSession: `wux_${name}`, cwd: "/tmp", owner: "tester@host", createdAt: new Date().toISOString(), status: "running" });
+        expect(await runNotifyCli([name, signal], { stderr: { write: () => undefined } })).toBe(0);
+        expect(await readLatestBackendSignal(name)).toMatchObject({ signal });
+      }
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
   test("writes a backend-signal event, turn-complete sentinel, and state file", async () => {
     const temp = await tempState();
     const old = process.env.XDG_STATE_HOME;

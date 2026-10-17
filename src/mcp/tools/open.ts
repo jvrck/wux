@@ -5,7 +5,7 @@ import { ensureFeature } from "../capability";
 import { identityFor } from "../target";
 import { forwardToTarget, requireExplicitTarget, resolve, toolResult, type ToolContext } from "./context";
 
-const BACKENDS = ["shell", "claude", "codex"] as const;
+const BACKENDS = ["shell", "claude", "codex", "grok"] as const;
 
 export function register(server: McpServer, ctx: ToolContext): void {
   server.registerTool(
@@ -13,7 +13,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
     {
       title: "open a durable session",
       description:
-        "Open a new durable, human-attachable tmux session (shell/claude/codex) on a target. " +
+        "Open a new durable, human-attachable tmux session (shell/claude/codex/grok) on a target. " +
         "Inspectable durable TUI session control — not autonomous task execution. " +
         "name and cwd are required and are never auto-generated; target is required (mutation).",
       inputSchema: {

@@ -28,7 +28,7 @@ const OPERATIONAL_COMMANDS = ["run", "send", "read", "status", "wait", "result",
 // `mcp` and `skills` are commands but NOT operational: they run locally and
 // must never be forwarded to a default remote.
 const COMMANDS = [...OPERATIONAL_COMMANDS, "remotes", "mcp", "skills", "notify"] as const;
-const RUN_BACKENDS = new Set<RunBackend>(["shell", "claude", "codex"]);
+const RUN_BACKENDS = new Set<RunBackend>(["shell", "claude", "codex", "grok"]);
 const MARK_STATUSES = new Set<MarkStatus>(["waiting", "blocked", "running", "stopped"]);
 
 type CommandName = (typeof COMMANDS)[number];
@@ -98,7 +98,7 @@ const COMMAND_HELP: Record<CommandName, string> = {
   run: `Usage:
   wux run <backend> --name <run-name> --cwd <path> [--owner <owner>] [--json] [-- <backend args...>]
 
-Starts a worker session. Supported v1 backends are shell, claude, and codex.
+Starts a worker session. Supported v1 backends are shell, claude, codex, and grok.
 --json prints {name, tmuxSession, backend}.
 A literal -- ends wux options; everything after it is forwarded verbatim to the
 backend, after wux's own managed args (e.g. the notify hook). wux never
@@ -145,7 +145,7 @@ autonomous loop can wait and collect the result in one call.
 
 Prints a backend-agnostic result envelope composed read-only from existing run
 state: outcome, completedVia, the worker's last turnId/lastAssistantMessage
-(claude/codex only — omitted for shell), and pointers (runDir, paneLogPath,
+(from wired claude/codex hooks; normally omitted for grok and shell), and pointers (runDir, paneLogPath,
 eventsPath, sentinelPath) the operator follows for out-of-band ground truth.
 It is a snapshot, not a blocker; pair it with 'wux wait'. Exit code mirrors
 outcome (done -> 0, else nonzero). wux owns the schema, never the content:

@@ -3,7 +3,7 @@
 ## Project Snapshot
 
 `wux` is a Bun/TypeScript CLI for durable agent worker sessions backed by `tmux`.
-It starts local `shell`, `claude`, and `codex` runs, records state/logs under the
+It starts local `shell`, `claude`, `codex`, and `grok` runs, records state/logs under the
 user state directory, stores named remote config under the user config directory,
 and can forward the same CLI contract to remote hosts over SSH. There is no
 daemon. An operator-first stdio MCP control surface — `wux mcp` (local-to-client,
@@ -87,7 +87,7 @@ src/index.ts -> src/cli.ts -> src/commands/* -> src/runtime/*
 - `src/runtime/events.ts` appends JSONL events. `src/runtime/process.ts` wraps
   `spawn` and returns `{ code, stdout, stderr }` even for non-zero exits.
 - `src/backends/*` only resolve the argv launched inside tmux. `shell` uses
-  `$SHELL || /bin/sh`; `claude` and `codex` resolve executables from `PATH` and
+  `$SHELL || /bin/sh`; `claude`, `codex`, and `grok` resolve executables from `PATH` and
   throw `WuxError` when absent.
 
 Each run directory contains `meta.json`, `pane.log`, and `events.jsonl`. `RunMeta`

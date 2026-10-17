@@ -310,6 +310,22 @@ describe("mcp tools — remote target forwarding", () => {
     return { client, close: async () => (await client.close(), await server.close()) };
   }
 
+  test("open accepts the grok backend and forwards it unchanged", async () => {
+    const calls: string[][] = [];
+    const harness = await connectRemote(async (args) => {
+      calls.push(args);
+      return { code: 0, stdout: "created grok-run (grok)\n", stderr: "" };
+    });
+    try {
+      const opened = await call(harness.client, "open", { backend: "grok", name: "grok-run", cwd: "/tmp", target: "work" });
+      expect(opened.isError).toBeFalsy();
+      expect(opened.structured.forwarded).toBe(true);
+      expect(calls.some((argv) => argv[argv.length - 1].includes("'run' 'grok' '--name' 'grok-run' '--cwd' '/tmp'"))).toBe(true);
+    } finally {
+      await harness.close();
+    }
+  });
+
   test("a remote observation tool forwards over SSH and returns a labeled result + remote identity", async () => {
     const calls: string[][] = [];
     const harness = await connectRemote(async (args) => {

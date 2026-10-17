@@ -59,6 +59,26 @@ This is explicit per-run injection only. `wux` does not auto-install hooks into
 `~/.claude`, `~/.codex`, or any global backend config, and it does not run a
 listener, daemon, or public port. The run dir is the channel.
 
+## Grok Build backend
+
+`grok` must resolve on the target's **non-interactive** PATH, just like `claude`
+and `codex` (for example, an operator-managed `/usr/local/bin/grok` symlink).
+Wux does not install, authenticate, or update Grok. On Grok 1.0.62, no safe
+per-run hooks/config injection mechanism was verified, so wux does not inject
+one or edit `~/.grok`, project `.grok`, or `.claude` configuration. Pass Grok
+options unchanged after `--`:
+
+```bash
+wux run grok --name grok-smoke --cwd /tmp -- --no-auto-update
+```
+
+After placement use `run → read/wait → send`: inspect OAuth sign-in,
+trust-folder or `/hooks-trust`, and update screens manually before sending a
+task. `--no-auto-update` is an operator passthrough recommendation for automation;
+it is never injected by wux. Grok's quiet TUI is not a done signal, so use a
+sentinel or an explicitly composed external `wux notify <run> turn-complete`
+hook when completion evidence is required.
+
 ## Install globally
 
 ```bash
@@ -177,7 +197,7 @@ path once so you don't repeat `--host-wux`; `wux remotes doctor <name>` then
 verifies it.
 
 Use `wux remotes doctor <name>` after adding a named remote. It checks SSH,
-remote `wux --version`, `tmux -V`, `claude`/`codex` presence (advisory), version
+remote `wux --version`, `tmux -V`, `claude`/`codex`/`grok` presence (advisory; Grok includes its version), version
 skew vs the local wux, and the configured default cwd when present — reporting all
 checks rather than stopping at the first failure.
 
@@ -211,7 +231,7 @@ targets, give each host a stable name over a private network such as
 
    There is no separate local-only flag — `--all` always includes the local host
    (`local`/`localhost` are reserved remote names). It exits non-zero if any host
-   fails a *critical* check (ssh / wux / tmux); `claude`/`codex`/cwd/version-skew
+   fails a *critical* check (ssh / wux / tmux); `claude`/`codex`/`grok`/cwd/version-skew
    are advisory and never fail a host.
 
 Once a fleet is healthy, drive any host with `--remote <name>` from the CLI, or
