@@ -163,6 +163,7 @@ describe("remotes command", () => {
         ["ssh", ...SSH_OPTS, "--", "worker", "'tmux' '-V'"],
         ["ssh", ...SSH_OPTS, "--", "worker", "'command' '-v' 'claude'"],
         ["ssh", ...SSH_OPTS, "--", "worker", "'command' '-v' 'codex'"],
+        ["ssh", ...SSH_OPTS, "--", "worker", "'sh' '-lc' 'command -v grok && grok --version'"],
         ["ssh", ...SSH_OPTS, "--", "worker", "'test' '-d' '/tmp'"],
       ]);
       expect(memory.output().stdout).toContain("ssh: ok");
@@ -172,7 +173,7 @@ describe("remotes command", () => {
     });
   });
 
-  test("doctor reports advisory claude/codex and a version-derived JSON report", async () => {
+  test("doctor reports advisory claude/codex/grok and a version-derived JSON report", async () => {
     await withConfig(async () => {
       await run(["remotes", "add", "work", "worker", "--wux-path", "/opt/wux"]);
       const memory = memoryIO();
@@ -197,9 +198,13 @@ describe("remotes command", () => {
       const labels = report.checks.map((check: { label: string }) => check.label);
       expect(labels).toContain("claude");
       expect(labels).toContain("codex");
+      expect(labels).toContain("grok");
       // codex absence is advisory: present in checks but does not block readiness
       const codex = report.checks.find((check: { label: string }) => check.label === "codex");
       expect(codex.ok).toBe(false);
+      const grok = report.checks.find((check: { label: string }) => check.label === "grok");
+      expect(grok.ok).toBe(true);
+      expect(grok.detail).toContain("ok");
       expect(report.ready).toBe(true);
       // Frozen §4: exact DoctorReport key set, and each DoctorCheck only carries label/ok/detail.
       expect(Object.keys(report).sort()).toEqual([
@@ -240,6 +245,7 @@ describe("remotes command", () => {
       // Not fail-fast: claude/codex checks still ran after the failed tmux check.
       expect(seen.some((cmd) => cmd.includes("'claude'"))).toBe(true);
       expect(seen.some((cmd) => cmd.includes("'codex'"))).toBe(true);
+      expect(seen.some((cmd) => cmd.includes("grok --version"))).toBe(true);
       expect(memory.output().stdout).toContain("tmux: FAILED");
       expect(memory.output().stdout).toContain("ready: no");
       expect(memory.output().stderr).toContain("not ready: work");

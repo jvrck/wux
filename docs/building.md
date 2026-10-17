@@ -30,4 +30,4 @@ The tag-driven release workflow cross-compiles the supported release assets and 
 
 ## Runtime dependencies
 
-`--compile` bundles only the Bun/JS side. The compiled binary still shells out to `tmux` at runtime, and to `claude`/`codex` for those backends, so those executables must be on `PATH` wherever the binary runs.
+`--compile` bundles only the Bun/JS side. The compiled binary still shells out to `tmux` at runtime, and to `claude`/`codex`/`grok` for those backends, so those executables must be on `PATH` wherever the binary runs.

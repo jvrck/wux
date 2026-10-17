@@ -66,7 +66,7 @@ export interface DoctorReport {
 }
 
 // ssh/wux/tmux are critical (a failure means the host cannot run workers);
-// claude/codex/cwd/version are advisory (warn, never fail the host).
+// claude/codex/grok/cwd/version are advisory (warn, never fail the host).
 const REMOTE_CRITICAL = ["ssh", "wux", "tmux"];
 const LOCAL_CRITICAL = ["wux", "tmux"];
 
@@ -262,6 +262,7 @@ async function buildRemoteReport(remote: RemoteConfig, runner: SshRunner): Promi
   checks.push(toCheck("tmux", await runner(sshRemoteArgs(host, ["tmux", "-V"]))));
   checks.push(toCheck("claude", await runner(sshRemoteArgs(host, ["command", "-v", "claude"]))));
   checks.push(toCheck("codex", await runner(sshRemoteArgs(host, ["command", "-v", "codex"]))));
+  checks.push(await remotePresenceWithVersion(host, "grok", runner));
   if (remote.defaultCwd) {
     checks.push(toCheck("cwd", await runner(sshRemoteArgs(host, ["test", "-d", remote.defaultCwd]))));
   }
@@ -285,12 +286,13 @@ async function buildRemoteReport(remote: RemoteConfig, runner: SshRunner): Promi
 
 async function buildLocalReport(): Promise<DoctorReport> {
   const checks: DoctorCheck[] = [];
-  // wux is this process; tmux is a binary; claude/codex are resolved on PATH
+  // wux is this process; tmux is a binary; agent backends are resolved on PATH
   // without a shell (advisory).
   checks.push({ label: "wux", ok: true, detail: `self (${VERSION})` });
   checks.push(toCheck("tmux", await runProcess(["tmux", "-V"])));
   checks.push(await localPresence("claude"));
   checks.push(await localPresence("codex"));
+  checks.push(await localPresenceWithVersion("grok"));
 
   return {
     schemaVersion: 1,
@@ -308,6 +310,21 @@ async function buildLocalReport(): Promise<DoctorReport> {
 async function localPresence(name: string): Promise<DoctorCheck> {
   const resolved = await resolveExecutable(name);
   return resolved ? { label: name, ok: true, detail: resolved } : { label: name, ok: false, detail: "not found" };
+}
+
+async function localPresenceWithVersion(name: string): Promise<DoctorCheck> {
+  const resolved = await resolveExecutable(name);
+  if (!resolved) return { label: name, ok: false, detail: "not found" };
+  const version = await runProcess([resolved, "--version"]);
+  const versionText = version.code === 0 ? version.stdout.trim() : "version unavailable";
+  return { label: name, ok: true, detail: `${resolved}${versionText.length > 0 ? ` (${versionText})` : ""}` };
+}
+
+async function remotePresenceWithVersion(host: string, name: string, runner: SshRunner): Promise<DoctorCheck> {
+  const result = await runner(sshRemoteArgs(host, ["sh", "-lc", `command -v ${name} && ${name} --version`]));
+  if (result.code !== 0) return { label: name, ok: false, detail: "not found" };
+  const detail = result.stdout.trim().replaceAll("\n", " ");
+  return { label: name, ok: true, ...(detail.length > 0 ? { detail } : {}) };
 }
 
 function renderReport(name: string, report: DoctorReport): string {

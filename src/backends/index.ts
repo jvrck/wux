@@ -1,6 +1,7 @@
 import type { RunBackend } from "../runtime/runs";
 import { claudeCommand, type BackendHookOptions } from "./claude";
 import { codexCommand } from "./codex";
+import { grokCommand } from "./grok";
 import { shellCommand } from "./shell";
 
 export async function backendCommand(
@@ -16,5 +17,7 @@ export async function backendCommand(
       return claudeCommand(env, hooks, backendArgs);
     case "codex":
       return codexCommand(env, hooks, backendArgs);
+    case "grok":
+      return grokCommand(env, hooks, backendArgs);
   }
 }

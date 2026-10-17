@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-`wux` is a single-binary Bun/TypeScript CLI that wraps durable tmux sessions for agent workers (`shell`, `claude`, `codex` backends). It starts, steers (`send`), observes (`read`), attaches to, hands off, marks, stops, and prunes those sessions — locally or on a remote host over SSH. There is no daemon. An operator-first stdio MCP control surface — `wux mcp` (local-to-client, no daemon, no network endpoint; remotes via `--host` / `--remote`) — exposes the operator tools (open/list/send/read/interrupt/stop/view) to MCP clients; see [docs/mcp.md](docs/mcp.md). Every invocation is a short-lived process that shells out to `tmux`.
+`wux` is a single-binary Bun/TypeScript CLI that wraps durable tmux sessions for agent workers (`shell`, `claude`, `codex`, `grok` backends). It starts, steers (`send`), observes (`read`), attaches to, hands off, marks, stops, and prunes those sessions — locally or on a remote host over SSH. There is no daemon. An operator-first stdio MCP control surface — `wux mcp` (local-to-client, no daemon, no network endpoint; remotes via `--host` / `--remote`) — exposes the operator tools (open/list/send/read/interrupt/stop/view) to MCP clients; see [docs/mcp.md](docs/mcp.md). Every invocation is a short-lived process that shells out to `tmux`.
 
 For changes that affect how *autonomous* agents (Claude Code, Codex) consume wux — structured `--json` output, a completion/readiness signal, or an MCP surface — keep the deliberate ordering in mind: skills → `wux wait` + `--json` → optional MCP shim.
 
@@ -34,7 +34,7 @@ The flow is **`index.ts` → `cli.ts` (parse + dispatch) → `commands/*` (orche
   - `tmux.ts` is the only module that drives tmux. Session lifecycle, `send-keys`, `capture-pane`, `pipe-pane` logging, and attach all live here.
   - `events.ts` appends structured JSONL to `events.jsonl`; `process.ts` is the `spawn` wrapper returning `{code, stdout, stderr}` (never rejects on non-zero exit).
   - `owner.ts` computes `user@hostname` for ownership; `errors.ts` defines `WuxError` for expected, user-facing failures.
-- **`src/backends/*.ts`** — `backendCommand(backend, env)` returns the argv to launch in the tmux session. `shell` uses `$SHELL`; `claude`/`codex` resolve their executable on `PATH` via `path.ts` and throw `WuxError` if absent.
+- **`src/backends/*.ts`** — `backendCommand(backend, env)` returns the argv to launch in the tmux session. `shell` uses `$SHELL`; `claude`/`codex`/`grok` resolve their executable on `PATH` via `path.ts` and throw `WuxError` if absent.
 - **`src/transport/ssh.ts`** — when `--host` is present, `runCli` short-circuits *before* dispatch and forwards the stripped args as `ssh <host> wux ...`, passing remote stdout/stderr/exit-code through unchanged. Remote execution is fully delegated; nothing in `runtime/` runs locally for a `--host` call.
 
 ### Key invariants

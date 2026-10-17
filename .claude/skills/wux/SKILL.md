@@ -1,6 +1,6 @@
 ---
 name: wux
-description: Use when operating Wux durable worker sessions, inspecting Wux targets, running Wux smoke checks, or delegating work through Wux shell, Claude, or Codex backends
+description: Use when operating Wux durable worker sessions, inspecting Wux targets, running Wux smoke checks, or delegating work through Wux shell, Claude, Codex, or Grok backends
 allowed-tools: Bash, Read
 ---
 
@@ -58,7 +58,7 @@ discovered direct local binary. For named remote smoke, use
 ## Durable Work
 
 - Choose conservative run names: letters, numbers, dot, underscore, and dash.
-- Pick `shell`, `claude`, or `codex` intentionally for the delegated job.
+- Pick `shell`, `claude`, `codex`, or `grok` intentionally for the delegated job.
 - For agent backends, send a clear prompt, use an explicit target `--cwd`, and
   read immediately to confirm the launch state.
 - If `read` shows login, approval, or modal state, surface it instead of
@@ -74,6 +74,10 @@ discovered direct local binary. For named remote smoke, use
   `completedVia: "hook"` as a backend boundary signal for `claude`/`codex`;
   shell runs only have `completedVia: "quiescence"`, a TUI-settle heuristic.
   Hooks are injected per run, not auto-installed into backend config.
+  Grok has no wux-managed per-run hook in this release and never settles via
+  quiescence; it needs an explicit external hook or sentinel, otherwise it
+  times out/returns unknown. Inspect Grok OAuth/trust/update UI with `read`
+  before sending and use `-- --no-auto-update` if desired.
 - Use `wux read --follow` only when you need a pipeable live pane-log stream;
   it is still a labelled pane scrape, not structured task output.
 - Collect results through `git`, `gh`, result files, or `pane.log`, not only the

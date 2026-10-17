@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
 
 import { appendBackendSignal, type BackendSignal } from "../runtime/events";
+import { WuxError } from "../runtime/errors";
+import { loadRun } from "../runtime/runs";
 
 type Writer = { write(chunk: string): unknown };
 
@@ -27,6 +29,21 @@ export async function runNotifyCli(args: string[], options: NotifyCliOptions = {
   try {
     const stdinPayload = parsedArgs.payload === undefined ? parsePayload(options.stdin ?? (await readStdin())) : undefined;
     const payload = parsedArgs.payload ?? stdinPayload;
+    // Preserve the helper's historical ability to receive a notification before
+    // run metadata is visible (and the direct unit-test seam). Real Grok runs
+    // always have metadata by the time an external hook can invoke this helper.
+    const meta = await loadRun(runName).catch((error: unknown) => {
+      if (error instanceof WuxError && error.message === `run not found: ${runName}`) return undefined;
+      throw error;
+    });
+    // Path B Grok has no wux-installed lifecycle hook. Never guess from a
+    // hook-shaped payload: Notification, PermissionDenied, SubagentStop and
+    // unknown events are not proof that the current turn completed. A composed
+    // operator hook must deliberately pass `turn-complete` or
+    // `awaiting-approval` as an argument.
+    if (meta?.backend === "grok" && parsedArgs.signal === undefined) {
+      throw new Error("grok notifications require an explicit signal");
+    }
     await appendBackendSignal(runName, {
       signal: parsedArgs.signal ?? signalFromPayload(payload) ?? "turn-complete",
       turnId: firstStringField(payload, ["turnId", "turn_id", "turn-id"]),
@@ -49,7 +66,7 @@ export async function runNotifyCli(args: string[], options: NotifyCliOptions = {
 
 function parseNotifyArgs(args: string[]): { signal?: BackendSignal; payload?: unknown; error?: boolean } {
   const first = args[0];
-  if (first === undefined) return { signal: "turn-complete" };
+  if (first === undefined) return {};
   const signal = normalizeSignal(first);
   if (signal) return { signal };
   const payload = parsePayload(first);

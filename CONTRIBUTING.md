@@ -1,7 +1,7 @@
 # Contributing to wux
 
 Thanks for your interest in wux — a small, single-binary CLI that wraps durable
-tmux sessions for `shell`, `claude`, and `codex` agent workers. Issues and pull
+tmux sessions for `shell`, `claude`, `codex`, and `grok` agent workers. Issues and pull
 requests are welcome.
 
 ## Development

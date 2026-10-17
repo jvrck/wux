@@ -119,7 +119,7 @@ For real delegated work, treat Wux runs as durable worker sessions:
 2. Select the target deliberately: default `wux`, `wux --local`, or
    `wux --remote <name>`.
 3. Verify the target `--cwd` exists before starting the run.
-4. Choose `shell`, `claude`, or `codex` based on the task, not on smoke-test
+4. Choose `shell`, `claude`, `codex`, or `grok` based on the task, not on smoke-test
    convenience.
 5. Start the run, send the initial task or command, and immediately read output
    to confirm launch state.
@@ -127,6 +127,10 @@ For real delegated work, treat Wux runs as durable worker sessions:
    `completedVia: "hook"` as a backend boundary signal for `claude`/`codex`;
    shell runs only have `completedVia: "quiescence"`, a TUI-settle heuristic.
    Hooks are injected per run, not auto-installed into backend config.
+  Grok currently has no wux-managed per-run hook and never settles from
+  quiescence: it needs an explicit external hook or sentinel, otherwise it times
+  out/returns unknown. Inspect Grok OAuth/trust/update UI with `read` before
+  sending; use `-- --no-auto-update` when the operator wants that behaviour.
 7. Use `wux read --follow` only when you need a pipeable live pane-log stream;
    it is still a labelled pane scrape, not structured task output.
 8. Poll with `read` and `status`; use `mark waiting` or `mark blocked` when that

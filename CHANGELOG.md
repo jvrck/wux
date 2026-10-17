@@ -10,6 +10,12 @@ intentionally not reproduced here.
 
 ## Unreleased
 
+### Added
+
+- Added the durable `grok` backend, including MCP open support and advisory Grok
+  PATH/version checks in `remotes doctor`. Grok uses explicit hook/sentinel
+  completion evidence only; quiet panes never report done.
+
 ## 2026.10.03
 
 No breaking changes.

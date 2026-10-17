@@ -60,7 +60,7 @@ When you `wux attach`, the session keeps a generous scrollback (50000 lines) so 
 
 | Command | What it does |
 | --- | --- |
-| `run <shell\|claude\|codex>` | Start a worker session |
+| `run <shell\|claude\|codex\|grok>` | Start a worker session |
 | `send` | Send literal text plus Enter to a run |
 | `read` | Read recent pane output without attaching |
 | `status` | List known runs |
@@ -154,6 +154,20 @@ rather than a false `done` (precise provenance in
 liveness as the backstop, and reports which rung fired as `completedVia`. If the
 session is gone with no completion signal, `wait` reports `unknown`, not done, and
 leaves `completedVia` unset.
+
+`grok` is also available for durable interactive Grok Build sessions:
+
+```bash
+wux run grok --name grok-smoke --cwd /tmp -- --no-auto-update
+wux read grok-smoke --tail 60       # inspect sign-in/trust/update state first
+wux send grok-smoke 'Reply READY'
+```
+
+Grok 1.0.62 has no verified per-run hook injection, so wux deliberately does
+not claim quiet Grok panes are done: `wait` times out and `result` is `unknown`
+unless an explicit external `wux notify <run> turn-complete` hook or a fresh
+run-dir sentinel supplies evidence. Grok is intentionally ungated for `send`;
+its submission verdict is best-effort.
 
 ## Releases
 

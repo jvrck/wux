@@ -48,7 +48,7 @@ async function withState<T>(fn: (stateHome: string, root: string) => Promise<T>)
 async function seedRun(
   stateHome: string,
   name: string,
-  backend: "shell" | "claude" | "codex",
+  backend: "shell" | "claude" | "codex" | "grok",
 ): Promise<string> {
   await saveRun({
     name,
@@ -65,6 +65,16 @@ async function seedRun(
 }
 
 describe("result", () => {
+  test("a grok run with no hook or sentinel stays unknown", async () => {
+    await withState(async (stateHome) => {
+      const name = "grok-unknown";
+      await seedRun(stateHome, name, "grok");
+      const envelope = await resultCommand({ name });
+      expect(envelope.outcome).toBe("unknown");
+      expect(envelope.completedVia).toBeUndefined();
+    });
+  });
+
   test("composes an envelope from a claude turn-complete signal with lastAssistantMessage", async () => {
     await withState(async (stateHome) => {
       const name = "claude-done";

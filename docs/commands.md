@@ -49,7 +49,7 @@ Frozen envelopes for the core run-inspection path:
 RunMeta[]
 
 // wux run <backend> --name <name> --cwd <path> --json
-{ name: string; tmuxSession: string; backend: "shell" | "claude" | "codex" }
+{ name: string; tmuxSession: string; backend: "shell" | "claude" | "codex" | "grok" }
 
 // wux read <name> --json
 {
@@ -91,6 +91,7 @@ out-of-band ground truth.
 wux run shell  --name smoke        --cwd "$PWD"
 wux run claude --name claude-smoke --cwd "$PWD"
 wux run codex  --name codex-smoke  --cwd "$PWD"
+wux run grok   --name grok-smoke   --cwd "$PWD" -- --no-auto-update
 wux run shell  --name smoke-json   --cwd "$PWD" --json
 ```
 
@@ -105,7 +106,7 @@ env -u TMUX TMUX_TMPDIR=/tmp/wux-isolated-tmux wux run shell --name isolated --c
 env -u TMUX -u TMUX_TMPDIR wux read isolated
 ```
 
-All three backends share the same lifecycle, metadata, logging, send/read, attach, stop, and handoff mechanics. `shell` uses `$SHELL`; `claude` and `codex` must be available on `PATH`, and their login/approval prompts remain visible through `read` and `attach`.
+All four backends share the same lifecycle, metadata, logging, send/read, attach, stop, and handoff mechanics. `shell` uses `$SHELL`; `claude`, `codex`, and `grok` must be available on `PATH`, and their login/approval prompts remain visible through `read` and `attach`. Arguments after `--` are preserved verbatim after wux-managed arguments; wux does not merge or rewrite backend configuration.
 
 `--json` prints the creation envelope `{name, tmuxSession, backend}`.
 
@@ -186,6 +187,13 @@ unknown and falls through; `wait` never fabricates a hook or sentinel completion
 Hook and sentinel signals are accepted only for the current turn after the latest
 `send` or `interrupt`, so a previous turn's file drop cannot complete a later
 wait.
+
+Grok 1.0.62 has no wux-managed per-run hook. For Grok the honest ladder is
+**explicit hook > sentinel > timeout/unknown**: pane quietness never becomes
+`done` or `completedVia: "quiescence"`. A composed external hook must call
+`wux notify <run> turn-complete` (or the confirmed `awaiting-approval` signal)
+explicitly; raw Grok `Notification`, `PermissionDenied`, `SubagentStop`, and
+unknown payloads are deliberately rejected as completion evidence.
 
 Quiescence is a heuristic over the captured pane frame. `wait` polls the pane,
 hashes each frame, and reports done only after the hash stays unchanged for the
@@ -285,6 +293,10 @@ turn and is treated as stale (ignored), so a fresh, still-running turn never
 inherits the previous turn's outcome. `wait --result` is unaffected: it inlines
 `wait`'s own live resolution, which stays byte-consistent with the standalone
 `result` for the same settled turn.
+
+For Grok, a never-waited quiet pane is `unknown`; a completed `wait` without
+explicit hook/sentinel evidence persists `timeout`. Grok never replays a
+quiescence completion.
 
 `turnId`, `lastAssistantMessage`, and `signalAt` come from the latest
 `backend-signal` event and are present only for `claude`/`codex` turns. Shell runs

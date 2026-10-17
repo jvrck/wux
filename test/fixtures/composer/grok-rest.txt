@@ -1,0 +1,16 @@
+<SCRUBBED_CWD>                                       18K / 256K │ [Dashboard]
+
+   ❯ Reply exactly READY.
+
+   READY
+
+   Worked for 3.5s
+
+  Help improve Grok                                         [Opt out] [Opt in]
+  Off by default. Opt-in to allow SpaceXAI to retain coding data.
+
+  ╭──────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                        │
+  ╰──────────────────────────────────────────────────────── Grok 4.7 (high) ─╯
+
+  Shift+Tab:mode  │  Ctrl+x:shortcuts
