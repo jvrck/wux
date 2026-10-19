@@ -30,7 +30,7 @@ jobs:
         run: scripts/smoke-release-asset.sh
       - name: Upload diagnostics
         if: failure()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: e2e-local-binary-diagnostics
           path: |
@@ -59,7 +59,7 @@ jobs:
         run: scripts/smoke-remote-ssh.sh
       - name: Upload diagnostics
         if: failure()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: e2e-remote-ssh-diagnostics
           path: |
