@@ -21,6 +21,8 @@ intentionally not reproduced here.
   test cleanup against servers outside test-owned socket roots.
 - Accepted command options before or after a run name for stop, interrupt, wait,
   result, and handoff.
+- Added derived tmux liveness to JSON status output and explicit prune
+  reconciliation and prefix selection.
 
 ## 2026.10.17
 

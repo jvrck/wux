@@ -22,7 +22,7 @@ describe("prune", () => {
     process.env.XDG_STATE_HOME = temp.stateHome;
 
     try {
-      await expect(pruneRuns({ dryRun: false, now: NOW })).resolves.toEqual({ entries: [], pruned: 0, wouldPrune: 0, skipped: 0 });
+      await expect(pruneRuns({ dryRun: false, now: NOW })).resolves.toEqual({ entries: [], pruned: 0, wouldPrune: 0, reconciled: 0, skipped: 0 });
     } finally {
       restoreXdgStateHome(previous);
       await temp.cleanup();
@@ -142,6 +142,27 @@ describe("prune", () => {
       ]);
       await stat(active);
       await stat(broken);
+    } finally {
+      restoreXdgStateHome(previous);
+      await temp.cleanup();
+    }
+  });
+
+  test("reconciles definitively absent active runs and applies the prefix before probing", async () => {
+    const temp = await tempState();
+    const selected = await writeRunMeta(temp.stateHome, "batch-dead", { name: "batch-dead", status: "running" }, OLD);
+    const other = await writeRunMeta(temp.stateHome, "other-dead", { name: "other-dead", status: "running" }, OLD);
+    const previous = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    try {
+      const dry = await pruneRuns({ olderThanMs: 0, dryRun: true, reconcile: true, prefix: "batch-", now: NOW });
+      expect(dry.entries).toEqual([{ name: "batch-dead", action: "would-reconcile" }]);
+      await stat(selected);
+      await stat(other);
+      const result = await pruneRuns({ olderThanMs: 0, dryRun: false, reconcile: true, prefix: "batch-", now: NOW });
+      expect(result.reconciled).toBe(1);
+      await expect(stat(selected)).rejects.toThrow();
+      await stat(other);
     } finally {
       restoreXdgStateHome(previous);
       await temp.cleanup();

@@ -117,6 +117,7 @@ describe("status and mark", () => {
       expect(row).toBeDefined();
       expect(Object.hasOwn(row as object, "command")).toBe(true);
       expect(row?.command).toEqual([]);
+      expect(row).toMatchObject({ status: "running", liveness: "absent", derivedStatus: "unknown" });
     } finally {
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();

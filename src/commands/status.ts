@@ -1,6 +1,6 @@
 import { lastInput } from "../runtime/events";
 import { listRuns, type RunMeta, type RunStatus } from "../runtime/runs";
-import { connectionForMeta, hasSession } from "../runtime/tmux";
+import { connectionForMeta, hasSession, probeSession, type TmuxSessionState } from "../runtime/tmux";
 
 export type DisplayStatus = RunStatus | "unknown";
 
@@ -19,7 +19,7 @@ export interface StatusResult {
   rows: StatusRow[];
 }
 
-export type StatusJsonRun = RunMeta & { command: string[] };
+export type StatusJsonRun = RunMeta & { command: string[]; liveness: TmuxSessionState; derivedStatus: DisplayStatus };
 
 export interface StatusJsonResult {
   runs: StatusJsonRun[];
@@ -77,5 +77,20 @@ export async function statusCommand(): Promise<StatusResult> {
 
 export async function statusJsonCommand(): Promise<StatusJsonResult> {
   const runs = await listRuns();
-  return { runs: runs.map((run) => ({ ...run, command: run.command ?? [] })) };
+  const enriched = await Promise.all(
+    runs.map(async (run) => {
+      try {
+        const probe = await probeSession(run.tmuxSession, connectionForMeta(run));
+        return { ...run, command: run.command ?? [], liveness: probe.state, derivedStatus: deriveJsonStatus(run, probe.state) };
+      } catch {
+        return { ...run, command: run.command ?? [], liveness: "unavailable" as const, derivedStatus: "unknown" as const };
+      }
+    }),
+  );
+  return { runs: enriched };
+}
+
+function deriveJsonStatus(run: RunMeta, liveness: TmuxSessionState): DisplayStatus {
+  if (liveness === "unavailable") return "unknown";
+  return deriveStatus(run, liveness === "live");
 }

@@ -115,11 +115,15 @@ export async function probeSession(session: string, connection: TmuxConnection =
   const result = await runTmux(connection, ["has-session", "-t", exactTarget(session)]);
   if (result.code === 0) return { state: "live" };
   const detail = (result.stderr || result.stdout).trim();
-  const definitivelyAbsent = /can't find session|no server running on|no such file or directory|connection refused/i.test(detail);
+  const definitivelyAbsent = isDefinitivelyAbsentTmuxDetail(detail);
   if (connection.socketPath !== undefined && !definitivelyAbsent) {
     return { state: "unavailable", ...(detail.length > 0 ? { detail } : {}) };
   }
   return { state: "absent", ...(detail.length > 0 ? { detail } : {}) };
+}
+
+export function isDefinitivelyAbsentTmuxDetail(detail: string): boolean {
+  return /can't find session|no server running on|no such file or directory|connection refused/i.test(detail);
 }
 
 export async function hasSession(session: string, connection: TmuxConnection = ambientTmuxConnection()): Promise<boolean> {
