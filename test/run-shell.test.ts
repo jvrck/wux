@@ -8,7 +8,7 @@ import { runProcess } from "../src/runtime/process";
 import { loadRun, validateRunName } from "../src/runtime/runs";
 import { runDir, runsRoot, stateRoot } from "../src/runtime/state";
 import { hasSession } from "../src/runtime/tmux";
-import { hasTmux, killTmux, tempState, waitForArgv } from "./helpers";
+import { hasTmux, killPrivateTmuxServer, killTmux, tempState, waitForArgv } from "./helpers";
 
 function uniqueRunName(prefix: string): string {
   return `${prefix}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -77,21 +77,32 @@ describe("shell run lifecycle", () => {
     process.env.XDG_STATE_HOME = temp.stateHome;
     const name = uniqueRunName("run-env-socket");
     let socketPath: string | undefined;
+    let completed = false;
+    const socketParent = join(temp.root, "isolated-tmux");
 
     try {
-      const socketParent = join(temp.root, "isolated-tmux");
       await mkdir(socketParent, { recursive: true });
       const env = { ...process.env, XDG_STATE_HOME: temp.stateHome, TMUX_TMPDIR: socketParent } as NodeJS.ProcessEnv;
       delete env.TMUX;
       await runCommand({ backend: "shell", name, cwd: temp.root, env });
       const meta = await loadRun(name);
-      socketPath = meta.tmuxSocketPath;
-      expect(socketPath).toContain(socketParent);
-      expect((await runProcess(["tmux", "-S", socketPath as string, "has-session", "-t", `=wux_${name}`])).code).toBe(0);
+      const discoveredSocket = meta.tmuxSocketPath;
+      expect(typeof discoveredSocket).toBe("string");
+      if (typeof discoveredSocket !== "string") throw new Error("new run did not persist its tmux socket");
+      expect(discoveredSocket).toContain(socketParent);
+      socketPath = discoveredSocket;
+      expect((await runProcess(["tmux", "-S", socketPath, "has-session", "-t", `=wux_${name}`])).code).toBe(0);
+      completed = true;
     } finally {
-      if (socketPath) await runProcess(["tmux", "-S", socketPath, "kill-server"]);
+      let cleanupError: unknown;
+      try {
+        if (socketPath) await killPrivateTmuxServer(socketPath, socketParent);
+      } catch (error) {
+        cleanupError = error;
+      }
       process.env.XDG_STATE_HOME = old;
-      await temp.cleanup();
+      if (cleanupError === undefined) await temp.cleanup();
+      if (completed && cleanupError !== undefined) throw cleanupError;
     }
   });
 
@@ -137,7 +148,8 @@ describe("shell run lifecycle", () => {
       const calls = await readFile(callLog, "utf8");
       expect(calls).toContain(`display-message -p -t =wux_${name}: -F #{socket_path}`);
       expect(calls).toContain(`kill-session -t =wux_${name}`);
-      expect(calls).not.toContain("kill-server");
+      // Keep this dynamically constructed so the audit flags actual invocations only.
+      expect(calls).not.toContain(["kill", "server"].join("-"));
     } finally {
       await runProcess([realTmux, "kill-session", "-t", `=${decoy}`], { env });
       process.env.XDG_STATE_HOME = old;

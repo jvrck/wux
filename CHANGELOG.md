@@ -10,6 +10,11 @@ intentionally not reproduced here.
 
 ## Unreleased
 
+### Fixed
+
+- Isolated the test suite's tmux servers from an invoking terminal and guarded
+  test cleanup against servers outside test-owned socket roots.
+
 ## 2026.10.17
 
 No breaking changes.

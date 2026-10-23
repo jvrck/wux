@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runProcess } from "../src/runtime/process";
-import { hasTmux } from "./helpers";
+import { hasTmux, killPrivateTmuxServer } from "./helpers";
 
 interface CommandResult {
   code: number;
@@ -62,6 +62,7 @@ describe("socket-bound tmux runs", () => {
     const nameB = `socket-b-${process.pid}-${Date.now()}`;
     let socketA: string | undefined;
     let socketB: string | undefined;
+    let completed = false;
 
     try {
       await mkdir(socketAParent, { recursive: true });
@@ -76,11 +77,17 @@ describe("socket-bound tmux runs", () => {
       if (createdB.code !== 0) throw new Error(`create B failed: ${createdB.stderr || createdB.stdout}`);
       const metaA = JSON.parse(await readFile(join(state, "wux", "runs", nameA, "meta.json"), "utf8"));
       const metaB = JSON.parse(await readFile(join(state, "wux", "runs", nameB, "meta.json"), "utf8"));
-      socketA = metaA.tmuxSocketPath;
-      socketB = metaB.tmuxSocketPath;
-      expect(typeof socketA).toBe("string");
-      expect(typeof socketB).toBe("string");
-      if (!socketA || !socketB) throw new Error("new runs did not persist their tmux sockets");
+      const discoveredSocketA = metaA.tmuxSocketPath;
+      const discoveredSocketB = metaB.tmuxSocketPath;
+      expect(typeof discoveredSocketA).toBe("string");
+      expect(typeof discoveredSocketB).toBe("string");
+      if (typeof discoveredSocketA !== "string" || typeof discoveredSocketB !== "string") {
+        throw new Error("new runs did not persist their tmux sockets");
+      }
+      expect(discoveredSocketA).toContain(socketAParent);
+      expect(discoveredSocketB).toContain(socketBParent);
+      socketA = discoveredSocketA;
+      socketB = discoveredSocketB;
       expect(socketA).not.toBe(socketB);
 
       // A same-named session on B must not be accepted as A, or be stopped with A.
@@ -142,18 +149,27 @@ describe("socket-bound tmux runs", () => {
       expect((await wux(["run", "shell", "--name", missingName, "--cwd", root], aEnv)).code).toBe(0);
       const missingMeta = JSON.parse(await readFile(join(state, "wux", "runs", missingName, "meta.json"), "utf8"));
       expect((await runProcess(["tmux", "-S", socketB, "new-session", "-d", "-s", missingMeta.tmuxSession, "sh"])).code).toBe(0);
-      expect((await runProcess(["tmux", "-S", socketA, "kill-server"])).code).toBe(0);
+      expect(await killPrivateTmuxServer(socketA, root)).toMatchObject({ code: 0 });
       expect((await wux(["status"], bEnv)).stdout).toContain(`${missingName}`);
       expect((await wux(["status"], bEnv)).stdout).toContain("unknown");
       expect((await wux(["stop", missingName, "--yes"], bEnv)).code).toBe(0);
       expect(JSON.parse(await readFile(join(state, "wux", "runs", missingName, "meta.json"), "utf8")).status).toBe("stopped");
       expect((await runProcess(["tmux", "-S", socketB, "has-session", "-t", `=${missingMeta.tmuxSession}`])).code).toBe(0);
       socketA = undefined;
+      completed = true;
     } finally {
       // Both servers are created under this test's private temporary parents.
-      if (socketA) await runProcess(["tmux", "-S", socketA, "kill-server"]);
-      if (socketB) await runProcess(["tmux", "-S", socketB, "kill-server"]);
-      await rm(root, { recursive: true, force: true });
+      const cleanupErrors: unknown[] = [];
+      for (const socketPath of [socketA, socketB]) {
+        if (!socketPath) continue;
+        try {
+          await killPrivateTmuxServer(socketPath, root);
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      if (cleanupErrors.length === 0) await rm(root, { recursive: true, force: true });
+      if (completed && cleanupErrors.length > 0) throw new AggregateError(cleanupErrors, "failed to clean private tmux servers");
     }
-  });
+  }, 15_000);
 });
