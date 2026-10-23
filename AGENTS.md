@@ -131,6 +131,10 @@ name, launch command, status, and timestamps.
 Tests use Bun's test runner and live filesystem state. Follow the existing pattern
 in `test/helpers.ts` for run-touching tests:
 
+- The suite preload removes inherited `TMUX` and `TMUX_PANE` values and creates
+  its own private `TMUX_TMPDIR`; `bun test` is safe to run inside tmux without an
+  external wrapper. Never add unguarded `tmux kill-server` calls in tests.
+
 - call `hasTmux()` and return early for tmux-dependent tests when unavailable;
 - isolate state by temporarily setting `process.env.XDG_STATE_HOME` to
   `tempState().stateHome`;

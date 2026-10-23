@@ -1,7 +1,7 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { runProcess } from "../src/runtime/process";
+import { join, relative } from "node:path";
+import { runProcess, type ProcessResult } from "../src/runtime/process";
 
 export async function hasTmux(): Promise<boolean> {
   return (await runProcess(["tmux", "-V"])).code === 0;
@@ -31,6 +31,26 @@ export async function waitForArgv(path: string, minTokens = 1, timeoutMs = 5000)
 
 export async function killTmux(runName: string): Promise<void> {
   await runProcess(["tmux", "kill-session", "-t", `=wux_${runName}`]);
+}
+
+type TmuxRunner = (args: string[]) => Promise<ProcessResult>;
+
+function isStrictlyInside(path: string, root: string): boolean {
+  const pathFromRoot = relative(root, path);
+  return pathFromRoot.length > 0 && !pathFromRoot.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && pathFromRoot !== "..";
+}
+
+export async function killPrivateTmuxServer(socketPath: string, allowedRoot: string, runner: TmuxRunner = runProcess): Promise<void> {
+  const [resolvedSocket, resolvedAllowedRoot, testRoot] = await Promise.all([
+    realpath(socketPath),
+    realpath(allowedRoot),
+    process.env.WUX_TEST_TMUX_ROOT ? realpath(process.env.WUX_TEST_TMUX_ROOT) : undefined,
+  ]);
+  const allowed = isStrictlyInside(resolvedSocket, resolvedAllowedRoot) || (testRoot !== undefined && isStrictlyInside(resolvedSocket, testRoot));
+  if (!allowed) {
+    throw new Error(`refusing to kill tmux server outside test-owned roots: ${resolvedSocket}`);
+  }
+  await runner(["tmux", "-S", resolvedSocket, "kill-server"]);
 }
 
 export async function tempState(): Promise<{ root: string; stateHome: string; cleanup: () => Promise<void> }> {

@@ -12,7 +12,7 @@ wux is a [Bun](https://bun.sh) + TypeScript project. You need Bun `>=1.3.9` and
 ```bash
 bun install
 bun run typecheck   # tsc --noEmit (strict) — the only static check
-bun test            # full suite (exercises real tmux and the filesystem)
+bun test            # full suite (isolates its own private tmux server and exercises the filesystem)
 bun run wux -- --help
 ```
 
@@ -21,7 +21,9 @@ bun run wux -- --help
 - The architecture, key invariants, and conventions are documented in
   [CLAUDE.md](CLAUDE.md).
 - Tmux-dependent tests early-return when `tmux` is absent, so install `tmux` to run
-  the full suite locally.
+  the full suite locally. The suite removes inherited tmux client variables and
+  creates a private tmux socket root itself, so `bun test` is safe to run inside
+  tmux without an external wrapper.
 
 ## Pull requests
 
