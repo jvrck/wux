@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pruneRuns, formatPruneResult } from "../src/commands/prune";
 import { runCommand } from "../src/commands/run";
@@ -167,6 +167,37 @@ describe("prune", () => {
       restoreXdgStateHome(previous);
       await temp.cleanup();
     }
+  });
+
+  test("reconcile dry-run reports would reconcile and leaves metadata unchanged", async () => {
+    const temp = await tempState();
+    const dir = await writeRunMeta(temp.stateHome, "dry-reconcile", { name: "dry-reconcile", status: "running" }, OLD);
+    const before = await readFile(join(dir, "meta.json"), "utf8");
+    const previous = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    try {
+      const result = await pruneRuns({ olderThanMs: 0, dryRun: true, reconcile: true, now: NOW });
+      expect(formatPruneResult(result)).toContain("would reconcile dry-reconcile");
+      expect(await readFile(join(dir, "meta.json"), "utf8")).toBe(before);
+    } finally { restoreXdgStateHome(previous); await temp.cleanup(); }
+  });
+
+  test("reconciled recent run is kept and renders reconciled", async () => {
+    const temp = await tempState();
+    const dir = await writeRunMeta(temp.stateHome, "recent-reconcile", { name: "recent-reconcile", status: "running" }, NOW);
+    const previous = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    try {
+      const result = await pruneRuns({ days: 30, dryRun: false, reconcile: true, now: NOW });
+      expect(formatPruneResult(result)).toContain("reconciled recent-reconcile");
+      await stat(dir);
+    } finally { restoreXdgStateHome(previous); await temp.cleanup(); }
+  });
+
+  test("default prune formatting is byte-identical without reconcile", () => {
+    expect(formatPruneResult({ entries: [{ name: "x", action: "would-prune" }], pruned: 0, wouldPrune: 1, skipped: 0 })).toBe(
+      "would prune x\nsummary: pruned 0, would-prune 1, skipped 0\n",
+    );
   });
 
   test("validates days as a positive integer", async () => {

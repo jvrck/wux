@@ -94,6 +94,8 @@ export async function pruneCommand(options: PruneOptions): Promise<void> {
 export function formatPruneResult(result: PruneResult): string {
   const lines = result.entries.map((entry) => {
     if (entry.action === "skipped") return `skip ${entry.name}: ${entry.reason}`;
+    if (entry.action === "would-reconcile") return `would reconcile ${entry.name}`;
+    if (entry.action === "reconciled") return `reconciled ${entry.name}`;
     if (entry.action === "would-prune") return `would prune ${entry.name}`;
     return `pruned ${entry.name}`;
   });
