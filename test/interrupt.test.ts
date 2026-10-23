@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { interruptCommand } from "../src/commands/interrupt";
 import { runCommand } from "../src/commands/run";
 import { sendCommand } from "../src/commands/send";
-import { runProcess, type ProcessResult } from "../src/runtime/process";
+import type { ProcessResult } from "../src/runtime/process";
 import { loadRun, saveRun } from "../src/runtime/runs";
 import { ambientTmuxConnection, interruptSession } from "../src/runtime/tmux";
 import { hasTmux, killTmux, tempState } from "./helpers";
@@ -99,24 +99,16 @@ describe("interrupt", () => {
     process.env.XDG_STATE_HOME = temp.stateHome;
     const name = uniqueRunName("interrupt-dead");
     let created = false;
-    let keepaliveSocket: string | undefined;
-    let keepaliveSession: string | undefined;
 
     try {
       await runCommand({ backend: "shell", name, cwd: temp.root });
       created = true;
-      const meta = await loadRun(name);
-      if (!meta.tmuxSocketPath) throw new Error("new run did not persist its tmux socket");
-      keepaliveSocket = meta.tmuxSocketPath;
-      keepaliveSession = `wux_${uniqueRunName("interrupt-keepalive")}`;
-      expect((await runProcess(["tmux", "-S", keepaliveSocket, "new-session", "-d", "-s", keepaliveSession, "sh"])).code).toBe(0);
       // Metadata still says running, but the tmux session is gone.
       await killTmux(name);
       created = false;
       await expect(interruptCommand({ name, forceOwner: false })).rejects.toThrow("tmux session is not running");
     } finally {
       if (created) await killTmux(name);
-      if (keepaliveSocket && keepaliveSession) await runProcess(["tmux", "-S", keepaliveSocket, "kill-session", "-t", `=${keepaliveSession}`]);
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();
     }

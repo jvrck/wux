@@ -92,7 +92,7 @@ describe("shell run lifecycle", () => {
       socketPath = discoveredSocket;
       expect((await runProcess(["tmux", "-S", socketPath, "has-session", "-t", `=wux_${name}`])).code).toBe(0);
     } finally {
-      if (socketPath) await killPrivateTmuxServer(socketPath, socketParent);
+      if (socketPath) await killPrivateTmuxServer(socketPath, socketParent).catch(() => undefined);
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();
     }
@@ -140,6 +140,7 @@ describe("shell run lifecycle", () => {
       const calls = await readFile(callLog, "utf8");
       expect(calls).toContain(`display-message -p -t =wux_${name}: -F #{socket_path}`);
       expect(calls).toContain(`kill-session -t =wux_${name}`);
+      // Keep this dynamically constructed so the audit flags actual invocations only.
       expect(calls).not.toContain(["kill", "server"].join("-"));
     } finally {
       await runProcess([realTmux, "kill-session", "-t", `=${decoy}`], { env });

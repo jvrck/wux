@@ -148,7 +148,7 @@ describe("socket-bound tmux runs", () => {
       expect((await wux(["run", "shell", "--name", missingName, "--cwd", root], aEnv)).code).toBe(0);
       const missingMeta = JSON.parse(await readFile(join(state, "wux", "runs", missingName, "meta.json"), "utf8"));
       expect((await runProcess(["tmux", "-S", socketB, "new-session", "-d", "-s", missingMeta.tmuxSession, "sh"])).code).toBe(0);
-      await killPrivateTmuxServer(socketA, root);
+      expect(await killPrivateTmuxServer(socketA, root)).toMatchObject({ code: 0 });
       expect((await wux(["status"], bEnv)).stdout).toContain(`${missingName}`);
       expect((await wux(["status"], bEnv)).stdout).toContain("unknown");
       expect((await wux(["stop", missingName, "--yes"], bEnv)).code).toBe(0);
@@ -157,8 +157,8 @@ describe("socket-bound tmux runs", () => {
       socketA = undefined;
     } finally {
       // Both servers are created under this test's private temporary parents.
-      if (socketA) await killPrivateTmuxServer(socketA, root);
-      if (socketB) await killPrivateTmuxServer(socketB, root);
+      if (socketA) await killPrivateTmuxServer(socketA, root).catch(() => undefined);
+      if (socketB) await killPrivateTmuxServer(socketB, root).catch(() => undefined);
       await rm(root, { recursive: true, force: true });
     }
   }, 15_000);

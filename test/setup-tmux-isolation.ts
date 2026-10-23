@@ -9,6 +9,7 @@ const tmuxRoot = await mkdtemp("/tmp/wux-test-tmux-");
 
 delete process.env.TMUX;
 delete process.env.TMUX_PANE;
+delete process.env.WUX_FORCE_LOCAL;
 process.env.TMUX_TMPDIR = tmuxRoot;
 process.env.WUX_TEST_TMUX_ROOT = tmuxRoot;
 
