@@ -496,12 +496,12 @@ async function dispatch(parsed: ParsedGlobal, io: CliIO, deps: CliDeps = {}): Pr
       return;
     }
     case "wait": {
-      const name = takeRunName(args, "wait");
       const idleMs = parseDurationMsOption(takeValue(args, "--idle"), "--idle");
       const timeoutMs = parseDurationMsOption(takeValue(args, "--timeout"), "--timeout");
       const pollIntervalMs = parsePositiveIntegerOption(takeIntegerValue(args, "--poll-interval-ms"), "--poll-interval-ms");
       const json = takeFlag(args, "--json");
       const inlineResult = takeFlag(args, "--result");
+      const name = takeRunName(args, "wait");
       rejectUnknownOptions(args);
       if (args.length > 0) throw new WuxError(`unexpected argument: ${args[0]}`);
       if (inlineResult && !json) throw new WuxError("--result requires --json");
@@ -515,8 +515,8 @@ async function dispatch(parsed: ParsedGlobal, io: CliIO, deps: CliDeps = {}): Pr
       return waitExitCode(result);
     }
     case "result": {
-      const name = takeRunName(args, "result");
       const json = takeFlag(args, "--json");
+      const name = takeRunName(args, "result");
       rejectUnknownOptions(args);
       if (args.length > 0) throw new WuxError(`unexpected argument: ${args[0]}`);
       const envelope = await resultCommand({ name });
@@ -543,8 +543,8 @@ async function dispatch(parsed: ParsedGlobal, io: CliIO, deps: CliDeps = {}): Pr
       return;
     }
     case "stop": {
-      const name = takeRunName(args, "stop");
       const yes = takeFlag(args, "--yes");
+      const name = takeRunName(args, "stop");
       rejectUnknownOptions(args);
       if (args.length > 0) throw new WuxError(`unexpected argument: ${args[0]}`);
       const result = await stopCommand(name, yes);
@@ -552,8 +552,8 @@ async function dispatch(parsed: ParsedGlobal, io: CliIO, deps: CliDeps = {}): Pr
       return;
     }
     case "interrupt": {
-      const name = takeRunName(args, "interrupt");
       const forceOwner = takeFlag(args, "--force-owner");
+      const name = takeRunName(args, "interrupt");
       rejectUnknownOptions(args);
       if (args.length > 0) throw new WuxError(`unexpected argument: ${args[0]}`);
       const result = await interruptCommand({ name, forceOwner });
@@ -561,10 +561,10 @@ async function dispatch(parsed: ParsedGlobal, io: CliIO, deps: CliDeps = {}): Pr
       return;
     }
     case "handoff": {
-      const name = takeRunName(args, "handoff");
       const promptFile = takeValue(args, "--prompt-file");
       const waitMs = parseIntegerOption(takeValue(args, "--wait-ms"), "--wait-ms");
       const tail = parseIntegerOption(takeValue(args, "--tail"), "--tail");
+      const name = takeRunName(args, "handoff");
       rejectUnknownOptions(args);
       if (args.length > 0) throw new WuxError(`unexpected argument: ${args[0]}`);
       await handoffCommand({ name, promptFile, waitMs, tail });

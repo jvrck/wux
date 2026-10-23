@@ -365,6 +365,7 @@ WUX_TMUX_MOUSE=1 wux run shell smoke    # this session reports `mouse on`
 ```bash
 wux stop smoke
 wux stop smoke --yes
+wux stop --yes smoke
 ```
 
 `stop` resolves run metadata and is idempotent and session-agnostic: it is the one verb that tears a run down regardless of liveness. If the tmux session is still live, it asks for confirmation unless `--yes` is present, kills the session, records `status: "stopped"` plus `stoppedAt`, and appends a stop event. If the session or whole socket server is definitively gone (tmux reports no session/server), `stop` finalizes the run to `stopped` and succeeds instead of erroring — no destructive action remains, so no confirmation is required on that path. An indeterminate stored-socket error, such as a permission or transport failure, is not definitive absence: `stop` reports the socket error and leaves metadata active rather than silently finalizing or trying the ambient server. A `stop` on an already-`stopped` run is a no-op success that leaves metadata and events untouched. Non-interactive callers stopping a live run must pass `--yes`. It does not delete run directories or prune logs.

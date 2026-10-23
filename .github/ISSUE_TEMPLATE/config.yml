@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Issue authoring guide
+    url: https://github.com/jvrck-labs/fspec/blob/main/docs/ISSUE_AUTHORING_GUIDE.md
+    about: Read this before opening an issue. The issue is the spec.
+  - name: Report a security vulnerability
+    url: https://github.com/jvrck/wux/security/policy
+    about: Please report vulnerabilities privately, as described in SECURITY.md.

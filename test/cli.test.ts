@@ -234,6 +234,32 @@ describe("dispatch", () => {
     });
   });
 
+  test("accepts known options before or after run names", async () => {
+    const pairs = [
+      [["stop", "--yes", "missing-stop"], ["stop", "missing-stop", "--yes"]],
+      [["interrupt", "--force-owner", "missing-interrupt"], ["interrupt", "missing-interrupt", "--force-owner"]],
+      [["wait", "--idle", "1ms", "--timeout", "1ms", "--json", "missing-wait"], ["wait", "missing-wait", "--idle", "1ms", "--timeout", "1ms", "--json"]],
+      [["result", "--json", "missing-result"], ["result", "missing-result", "--json"]],
+      [["handoff", "--wait-ms", "0", "--tail", "1", "missing-handoff"], ["handoff", "missing-handoff", "--wait-ms", "0", "--tail", "1"]],
+    ];
+
+    for (const [before, after] of pairs) {
+      const beforeResult = await run(["--local", ...before]);
+      const afterResult = await run(["--local", ...after]);
+      expect(beforeResult.code).toBe(1);
+      expect(afterResult.code).toBe(1);
+      expect(`${beforeResult.stdout}${beforeResult.stderr}`).toContain("run not found");
+      expect(`${afterResult.stdout}${afterResult.stderr}`).toContain("run not found");
+    }
+  });
+
+  test("keeps missing-name and unknown-option errors for stop", async () => {
+    expect(await run(["stop"])).toMatchObject({ code: 1, stderr: "wux: stop requires <run-name>\n" });
+    expect(await run(["stop", "--yes"])).toMatchObject({ code: 1, stderr: "wux: stop requires <run-name>\n" });
+    expect(await run(["stop", "--bogus", "name"])).toMatchObject({ code: 1, stderr: "wux: stop requires <run-name>\n" });
+    expect(await run(["stop", "name", "--bogus"])).toMatchObject({ code: 1, stderr: "wux: unknown option: --bogus\n" });
+  });
+
   test("splits backend passthrough at the first -- and leaves wux flags otherwise intact", () => {
     // No --: undefined (byte-identical to the pre-passthrough path); args untouched.
     const noTerminator = ["--name", "x", "--cwd", "P"];
