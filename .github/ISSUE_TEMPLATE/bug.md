@@ -1,0 +1,71 @@
+---
+name: Bug
+about: Report a reproducible defect
+title: 'fix: <action-oriented title>'
+labels: bug
+---
+
+<!--
+Write this issue so a coding agent can do the work without asking questions.
+Fill in all nine sections below, in order.
+One unit of work per issue. Security vulnerabilities go through SECURITY.md, not a public issue.
+-->
+
+## Summary
+
+<!-- What fails, and for whom? -->
+
+## Goal
+
+<!-- What correct behavior should replace the defect? -->
+
+## Current State / Problem
+
+<!-- Verified at `<sha>` (`main`, tag `<tag>`). Include relevant file and line references. -->
+
+**Observed:**
+
+**Expected:**
+
+**Reproduction:**
+
+```bash
+# Minimal reproducible command sequence.
+```
+
+## Implementation Details
+
+<!-- Specify the intended fix; do not leave important choices implicit. -->
+
+## Files Likely Affected
+
+| File | Change |
+| --- | --- |
+| `src/...` | MODIFY: describe the change |
+
+<!-- Command-surface changes also need docs/commands.md and CHANGELOG.md. -->
+
+## Dependencies / Related Issues
+
+<!-- Link related issues or state that there are none. -->
+
+## Constraints / Non-Goals
+
+<!-- Name the CLAUDE.md invariants this fix must keep. -->
+
+## Acceptance Criteria
+
+- [ ] Reproduction no longer triggers the bug.
+- [ ] Regression test added.
+
+## Verification
+
+```bash
+bun install --frozen-lockfile
+bun run typecheck
+bun test
+bun test test/<file>.test.ts
+bun run wux -- <command>
+```
+
+<!-- tmux-dependent tests skip when tmux is absent. -->

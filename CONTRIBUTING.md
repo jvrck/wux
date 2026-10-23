@@ -37,6 +37,8 @@ bun run wux -- --help
 ## Reporting bugs and security issues
 
 - Bugs and feature requests: open a [GitHub issue](https://github.com/jvrck/wux/issues).
+  Use the issue chooser templates, fill in all nine sections in order, give the
+  issue a `type:` title, and keep it to one unit of work.
 - Security vulnerabilities: please follow [SECURITY.md](SECURITY.md) and report
   privately — do not open a public issue.
 

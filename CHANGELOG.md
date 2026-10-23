@@ -14,6 +14,8 @@ intentionally not reproduced here.
 
 - Isolated the test suite's tmux servers from an invoking terminal and guarded
   test cleanup against servers outside test-owned socket roots.
+- Accepted command options before or after a run name for stop, interrupt, wait,
+  result, and handoff.
 
 ## 2026.10.17
 
