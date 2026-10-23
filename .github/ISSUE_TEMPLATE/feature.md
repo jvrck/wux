@@ -7,8 +7,7 @@ labels: enhancement
 
 <!--
 Write this issue so a coding agent can do the work without asking questions.
-Follow the Issue Authoring Guide:
-https://github.com/jvrck-labs/fspec/blob/main/docs/ISSUE_AUTHORING_GUIDE.md
+Fill in all nine sections below, in order.
 One unit of work per issue. Security vulnerabilities go through SECURITY.md, not a public issue.
 -->
 
