@@ -62,6 +62,7 @@ describe("socket-bound tmux runs", () => {
     const nameB = `socket-b-${process.pid}-${Date.now()}`;
     let socketA: string | undefined;
     let socketB: string | undefined;
+    let completed = false;
 
     try {
       await mkdir(socketAParent, { recursive: true });
@@ -155,11 +156,20 @@ describe("socket-bound tmux runs", () => {
       expect(JSON.parse(await readFile(join(state, "wux", "runs", missingName, "meta.json"), "utf8")).status).toBe("stopped");
       expect((await runProcess(["tmux", "-S", socketB, "has-session", "-t", `=${missingMeta.tmuxSession}`])).code).toBe(0);
       socketA = undefined;
+      completed = true;
     } finally {
       // Both servers are created under this test's private temporary parents.
-      if (socketA) await killPrivateTmuxServer(socketA, root).catch(() => undefined);
-      if (socketB) await killPrivateTmuxServer(socketB, root).catch(() => undefined);
-      await rm(root, { recursive: true, force: true });
+      const cleanupErrors: unknown[] = [];
+      for (const socketPath of [socketA, socketB]) {
+        if (!socketPath) continue;
+        try {
+          await killPrivateTmuxServer(socketPath, root);
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+      }
+      if (cleanupErrors.length === 0) await rm(root, { recursive: true, force: true });
+      if (completed && cleanupErrors.length > 0) throw new AggregateError(cleanupErrors, "failed to clean private tmux servers");
     }
   }, 15_000);
 });

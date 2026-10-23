@@ -1,7 +1,7 @@
 import { afterAll } from "bun:test";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { killPrivateTmuxServer } from "./helpers";
+import { cleanupPrivateTmuxServers } from "./helpers";
 
 // tmux Unix-domain sockets have a short path limit. Keep this parent directly
 // under /tmp rather than using Bun's longer per-user temporary directory.
@@ -28,11 +28,7 @@ async function findSockets(directory: string): Promise<string[]> {
 }
 
 afterAll(async () => {
-  try {
-    for (const socketPath of await findSockets(tmuxRoot)) {
-      await killPrivateTmuxServer(socketPath, tmuxRoot).catch(() => undefined);
-    }
-  } finally {
-    await rm(tmuxRoot, { recursive: true, force: true });
-  }
+  const sockets = await findSockets(tmuxRoot);
+  await cleanupPrivateTmuxServers(sockets, tmuxRoot);
+  await rm(tmuxRoot, { recursive: true, force: true });
 });

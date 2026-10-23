@@ -1,6 +1,6 @@
 import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { runProcess, type ProcessResult } from "../src/runtime/process";
 
 export async function hasTmux(): Promise<boolean> {
@@ -57,6 +57,22 @@ function allowedSocketPath(socketPath: string, allowedRoot: string, testRoot: st
   return isStrictlyInside(socketPath, allowedRoot) || (testRoot !== undefined && isStrictlyInside(socketPath, testRoot));
 }
 
+async function realpathWithMissingTail(path: string): Promise<string> {
+  const missingTail: string[] = [];
+  let ancestor = resolve(path);
+  for (;;) {
+    try {
+      return join(await realpath(ancestor), ...missingTail);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const parent = dirname(ancestor);
+      if (parent === ancestor) throw error;
+      missingTail.unshift(basename(ancestor));
+      ancestor = parent;
+    }
+  }
+}
+
 export async function killPrivateTmuxServer(socketPath: string, allowedRoot: string, runner: TmuxRunner = runProcess): Promise<ProcessResult> {
   if (!isAbsolute(socketPath)) {
     throw new Error(`refusing to kill tmux server outside test-owned roots: ${socketPath}`);
@@ -70,7 +86,7 @@ export async function killPrivateTmuxServer(socketPath: string, allowedRoot: str
     resolvedSocket = await realpath(socketPath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    const absentSocket = resolve(socketPath);
+    const absentSocket = await realpathWithMissingTail(socketPath);
     if (!allowedSocketPath(absentSocket, resolvedAllowedRoot, testRoot)) {
       throw new Error(`refusing to kill tmux server outside test-owned roots: ${socketPath}`);
     }
@@ -84,6 +100,20 @@ export async function killPrivateTmuxServer(socketPath: string, allowedRoot: str
     throw new Error(`failed to kill private tmux server at ${resolvedSocket}: ${result.stderr || result.stdout}`.trim());
   }
   return result;
+}
+
+export async function cleanupPrivateTmuxServers(socketPaths: string[], allowedRoot: string, runner: TmuxRunner = runProcess): Promise<void> {
+  const failures: Error[] = [];
+  for (const socketPath of socketPaths) {
+    try {
+      await killPrivateTmuxServer(socketPath, allowedRoot, runner);
+    } catch (error) {
+      failures.push(new Error(`failed to clean private tmux socket ${socketPath}`, { cause: error }));
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, `failed to clean ${failures.length} private tmux socket(s)`);
+  }
 }
 
 export async function tempState(): Promise<{ root: string; stateHome: string; cleanup: () => Promise<void> }> {

@@ -77,6 +77,7 @@ describe("shell run lifecycle", () => {
     process.env.XDG_STATE_HOME = temp.stateHome;
     const name = uniqueRunName("run-env-socket");
     let socketPath: string | undefined;
+    let completed = false;
     const socketParent = join(temp.root, "isolated-tmux");
 
     try {
@@ -91,10 +92,17 @@ describe("shell run lifecycle", () => {
       expect(discoveredSocket).toContain(socketParent);
       socketPath = discoveredSocket;
       expect((await runProcess(["tmux", "-S", socketPath, "has-session", "-t", `=wux_${name}`])).code).toBe(0);
+      completed = true;
     } finally {
-      if (socketPath) await killPrivateTmuxServer(socketPath, socketParent).catch(() => undefined);
+      let cleanupError: unknown;
+      try {
+        if (socketPath) await killPrivateTmuxServer(socketPath, socketParent);
+      } catch (error) {
+        cleanupError = error;
+      }
       process.env.XDG_STATE_HOME = old;
-      await temp.cleanup();
+      if (cleanupError === undefined) await temp.cleanup();
+      if (completed && cleanupError !== undefined) throw cleanupError;
     }
   });
 
