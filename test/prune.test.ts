@@ -22,7 +22,7 @@ describe("prune", () => {
     process.env.XDG_STATE_HOME = temp.stateHome;
 
     try {
-      await expect(pruneRuns({ dryRun: false, now: NOW })).resolves.toEqual({ entries: [], pruned: 0, wouldPrune: 0, reconciled: 0, skipped: 0 });
+      await expect(pruneRuns({ dryRun: false, now: NOW })).resolves.toEqual({ entries: [], pruned: 0, wouldPrune: 0, skipped: 0 });
     } finally {
       restoreXdgStateHome(previous);
       await temp.cleanup();
