@@ -281,6 +281,36 @@ describe("ssh transport", () => {
     expect(Buffer.concat(stdout)).toEqual(bytes);
   });
 
+  test("streams raw read-log bytes, stderr, and exit status through the real process path", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wux-read-log-ssh-"));
+    const fakeSsh = join(dir, "ssh");
+    const previousPath = process.env.PATH;
+    writeFileSync(fakeSsh, "#!/bin/sh\nprintf '\\000\\377raw-log'\nprintf 'remote stderr\\n' >&2\nexit 23\n");
+    chmodSync(fakeSsh, 0o755);
+    process.env.PATH = `${dir}:${previousPath ?? ""}`;
+    const stdout: Buffer[] = [];
+    let stderr = "";
+
+    try {
+      const code = await forwardSshCommand({
+        host: "worker",
+        args: ["read", "--log", "r"],
+        io: {
+          stdout: { write: (chunk) => (stdout.push(Buffer.from(chunk)), true) },
+          stderr: { write: (chunk) => (stderr += Buffer.from(chunk).toString("utf8")) },
+        },
+      });
+
+      expect(code).toBe(23);
+      expect(Buffer.concat(stdout)).toEqual(Buffer.from([0x00, 0xff, ...Buffer.from("raw-log")]));
+      expect(stderr).toBe("remote stderr\n");
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("runCli forwards host commands and preserves quoted text arguments", async () => {
     const memory = memoryIO();
     const calls: string[][] = [];

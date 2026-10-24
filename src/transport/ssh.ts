@@ -57,7 +57,9 @@ export async function forwardSshCommand(options: SshForwardOptions): Promise<num
   const rawLog = options.args[0] === "read" && options.args.includes("--log");
   const result = options.runner
     ? await options.runner(sshArgs)
-    : await runProcess(sshArgs, { timeoutMs: options.timeoutMs ?? forwardTimeoutMs(), rawStdout: rawLog });
+    : await runProcess(sshArgs, rawLog
+      ? { stdoutWriter: options.io.stdout }
+      : { timeoutMs: options.timeoutMs ?? forwardTimeoutMs() });
   if (result.stdoutBytes && result.stdoutBytes.length > 0) options.io.stdout.write(result.stdoutBytes);
   else if (result.stdout.length > 0) options.io.stdout.write(result.stdout);
   if (result.stderr.length > 0) options.io.stderr.write(result.stderr);
