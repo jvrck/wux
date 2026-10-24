@@ -144,7 +144,7 @@ describe("status and mark", () => {
         status: "running",
       })}\n`, "utf8");
 
-      expect((await statusJsonCommand()).runs.find((run) => run.name === name)).toMatchObject({
+      expect((await statusJsonCommand({ probe: async () => ({ state: "unavailable", detail: "permission denied" }) })).runs.find((run) => run.name === name)).toMatchObject({
         status: "running",
         liveness: "unavailable",
         derivedStatus: "unknown",

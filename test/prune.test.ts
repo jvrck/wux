@@ -354,28 +354,28 @@ describe("prune", () => {
         now: NOW,
         probe: async () => ({ state: "absent", detail: "tmux: permission denied" }),
       });
-      expect(result.entries).toEqual([{ name: "legacy-indeterminate", action: "skipped", reason: "tmux server unavailable" }]);
+      expect(result.entries).toEqual([{ name: "legacy-indeterminate", action: "skipped", reason: "indeterminate tmux state" }]);
     } finally {
       restoreXdgStateHome(previous);
       await temp.cleanup();
     }
   });
 
-  test("status and reconcile classify each tmux failure detail identically", async () => {
+  test("status and reconcile use the issue liveness table for stored and legacy sockets", async () => {
     const temp = await tempState();
     const previous = process.env.XDG_STATE_HOME;
     process.env.XDG_STATE_HOME = temp.stateHome;
     const details = [
-      ["can't find session: wux_missing", "absent"],
-      ["no server running on /tmp/wux.sock", "unavailable"],
-      ["no such file or directory", "unavailable"],
-      ["connection refused", "unavailable"],
-      ["permission denied", "unavailable"],
+      ["can't find session: wux_missing", true],
+      ["no server running on /tmp/wux.sock", true],
+      ["no such file or directory", true],
+      ["connection refused", true],
+      ["permission denied", false],
     ] as const;
 
     try {
       for (const hasSocket of [false, true]) {
-        for (const [index, [detail, liveness]] of details.entries()) {
+        for (const [index, [detail, definitive]] of details.entries()) {
           const name = `liveness-${hasSocket ? "socket" : "legacy"}-${index}`;
           await writeRunMeta(temp.stateHome, name, {
             name,
@@ -387,14 +387,14 @@ describe("prune", () => {
             createdAt: NOW.toISOString(),
             status: "running",
           }, OLD);
-          const probe = async () => ({ state: "absent" as const, detail });
+          const probe = async () => ({ state: hasSocket && !definitive ? "unavailable" as const : "absent" as const, detail });
           const status = await statusJsonCommand({ probe });
-          expect(status.runs.find((run) => run.name === name)?.liveness).toBe(liveness);
+          expect(status.runs.find((run) => run.name === name)?.liveness).toBe(hasSocket && !definitive ? "unavailable" : "absent");
           const prune = await pruneRuns({ olderThanMs: 0, dryRun: true, reconcile: true, now: NOW, probe });
           expect(prune.entries.find((entry) => entry.name === name)).toEqual(
-            liveness === "absent"
+            definitive
               ? { name, action: "would-reconcile-prune" }
-              : { name, action: "skipped", reason: "tmux server unavailable" },
+              : { name, action: "skipped", reason: hasSocket ? "tmux server unavailable" : "indeterminate tmux state" },
           );
         }
       }

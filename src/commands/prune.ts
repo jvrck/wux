@@ -6,6 +6,7 @@ import { runsRoot } from "../runtime/state";
 import {
   connectionForMeta,
   classifySessionLiveness,
+  isDefinitivelyAbsentTmuxDetail,
   probeSession,
   tmuxSessionName,
   type TmuxConnection,
@@ -188,6 +189,9 @@ async function decideRun(
   if ((!meta.status || ACTIVE_STATUSES.has(meta.status)) && reconcile) {
     if (classifySessionLiveness(sessionProbe) === "unavailable") {
       return { name, action: "skipped", reason: "tmux server unavailable" };
+    }
+    if (!Object.hasOwn(meta, "tmuxSocketPath") && !isDefinitivelyAbsentTmuxDetail(sessionProbe.detail ?? "")) {
+      return { name, action: "skipped", reason: "indeterminate tmux state" };
     }
     const timestampMs = await latestTimestampMs(dir, meta);
     const shouldPrune = isPrunable(timestampMs, cutoffMs, selectAll);
