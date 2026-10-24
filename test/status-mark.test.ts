@@ -206,19 +206,55 @@ describe("status and mark", () => {
     process.env.XDG_STATE_HOME = temp.stateHome;
     const valid = uniqueRunName("status-list-valid");
     const removed = uniqueRunName("status-list-removed");
+    const notDirectory = uniqueRunName("status-list-not-directory");
 
     try {
       await writeStatusMeta(temp.stateHome, valid, temp.root);
       await writeStatusMeta(temp.stateHome, removed, temp.root);
+      await writeStatusMeta(temp.stateHome, notDirectory, temp.root);
       await mkdir(join(temp.stateHome, "wux", "runs", uniqueRunName("status-list-empty")), { recursive: true });
       const reader = async (path: string) => {
         if (path.endsWith(`${removed}/meta.json`)) await rm(path);
+        if (path.endsWith(`${notDirectory}/meta.json`)) throw codedError("ENOTDIR");
         return readFile(path, "utf8");
       };
       expect((await listRuns({ readMeta: reader })).map((run) => run.name)).toEqual([valid]);
 
       await writeStatusMeta(temp.stateHome, removed, temp.root);
       expect((await listRunMetadata({ readMeta: reader })).map((run) => run.name)).toEqual([valid]);
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("run listings propagate EACCES and EIO metadata failures", async () => {
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("status-list-io");
+    try {
+      await writeStatusMeta(temp.stateHome, name, temp.root);
+      for (const code of ["EACCES", "EIO"]) {
+        const reader = async () => { throw codedError(code); };
+        await expect(listRuns({ readMeta: reader })).rejects.toMatchObject({ code });
+        await expect(statusJsonCommand({ readMeta: reader })).rejects.toMatchObject({ code });
+      }
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("listRuns and loadRun retain legacy metadata without a status field", async () => {
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("status-legacy-no-status");
+    try {
+      await writeStatusMeta(temp.stateHome, name, temp.root, false);
+      expect((await loadRun(name)).status).toBeUndefined();
+      expect((await listRuns()).map((run) => run.name)).toEqual([name]);
     } finally {
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();
@@ -240,7 +276,7 @@ describe("status and mark", () => {
   });
 });
 
-async function writeStatusMeta(stateHome: string, name: string, cwd: string): Promise<void> {
+async function writeStatusMeta(stateHome: string, name: string, cwd: string, includeStatus = true): Promise<void> {
   const dir = join(stateHome, "wux", "runs", name);
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, "meta.json"), `${JSON.stringify({
@@ -250,6 +286,10 @@ async function writeStatusMeta(stateHome: string, name: string, cwd: string): Pr
     cwd,
     owner: "test-owner",
     createdAt: "2026-06-08T00:00:00.000Z",
-    status: "running",
+    ...(includeStatus ? { status: "running" } : {}),
   })}\n`, "utf8");
+}
+
+function codedError(code: string): NodeJS.ErrnoException {
+  return Object.assign(new Error(code), { code });
 }

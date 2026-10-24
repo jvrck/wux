@@ -1,6 +1,6 @@
 import { lastInput } from "../runtime/events";
 import { WuxError } from "../runtime/errors";
-import { listRunMetadata, listRuns, type RunMeta, type RunStatus } from "../runtime/runs";
+import { listRunMetadata, listRuns, type ListRunOptions, type RunMeta, type RunStatus } from "../runtime/runs";
 import {
   classifySessionLiveness,
   connectionForMeta,
@@ -36,6 +36,7 @@ export interface StatusJsonResult {
 
 export interface StatusJsonOptions {
   probe?: (session: string, connection: TmuxConnection) => Promise<TmuxSessionProbe>;
+  readMeta?: ListRunOptions["readMeta"];
 }
 
 export async function statusRows(): Promise<StatusRow[]> {
@@ -89,7 +90,7 @@ export async function statusCommand(): Promise<StatusResult> {
 }
 
 export async function statusJsonCommand(options: StatusJsonOptions = {}): Promise<StatusJsonResult> {
-  const runs = await listRunMetadata();
+  const runs = await listRunMetadata({ readMeta: options.readMeta });
   const enriched = await Promise.all(
     runs.map(async (run) => {
       let connection: TmuxConnection;

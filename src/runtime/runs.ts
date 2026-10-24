@@ -79,9 +79,7 @@ export async function loadRun(name: string): Promise<RunMeta> {
   validateRunName(name);
   try {
     const raw = await readFile(join(runDir(name), "meta.json"), "utf8");
-    const meta = JSON.parse(raw) as RunMeta;
-    connectionForMeta(meta);
-    return meta;
+    return parseRunMeta(raw, true);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       throw new WuxError(`run not found: ${name}`);
@@ -117,20 +115,29 @@ async function readRunMetadata(validateSocket: boolean, readMeta = (path: string
   const runs: RunMeta[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
+    let raw: string;
     try {
-      const raw = await readMeta(join(runsRoot(), entry.name, "meta.json"));
-      const meta = JSON.parse(raw);
-      if (!isRunMeta(meta) || meta.name !== entry.name) continue;
-      if (validateSocket) connectionForMeta(meta);
-      runs.push(meta);
-    } catch {
-      // A run may be partially written or removed while listing. Match the
-      // historical listRuns behavior by skipping that single invalid entry.
-      continue;
+      raw = await readMeta(join(runsRoot(), entry.name, "meta.json"));
+    } catch (error) {
+      if (isMissingRunMetadataError(error)) continue;
+      throw error;
+    }
+    try {
+      runs.push(parseRunMeta(raw, validateSocket));
+    } catch (error) {
+      if (error instanceof WuxError || error instanceof SyntaxError) continue;
+      throw error;
     }
   }
 
   return runs.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function parseRunMeta(raw: string, validateSocket: boolean): RunMeta {
+  const meta = JSON.parse(raw);
+  if (!isRunMeta(meta)) throw new WuxError("invalid run metadata");
+  if (validateSocket) connectionForMeta(meta);
+  return meta;
 }
 
 function isRunMeta(value: unknown): value is RunMeta {
@@ -144,7 +151,7 @@ function isRunMeta(value: unknown): value is RunMeta {
     typeof meta.owner !== "string" ||
     typeof meta.createdAt !== "string" ||
     !["shell", "claude", "codex", "grok"].includes(meta.backend as string) ||
-    !["running", "waiting", "blocked", "stopped"].includes(meta.status as string)
+    (meta.status !== undefined && !["running", "waiting", "blocked", "stopped"].includes(meta.status as string))
   ) return false;
   return (meta.command === undefined || isStringArray(meta.command)) && (meta.backendArgs === undefined || isStringArray(meta.backendArgs));
 }
@@ -155,6 +162,11 @@ function isValidRunName(name: string): boolean {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isMissingRunMetadataError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "ENOENT" || code === "ENOTDIR" || code === "EISDIR";
 }
 
 export async function markRun(name: string, status: MarkStatus): Promise<RunMeta> {
