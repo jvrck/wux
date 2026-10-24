@@ -6,8 +6,8 @@
 // so both `commands/` and the MCP server can import it without a cycle.
 
 export interface CliIO {
-  stdout: { write(chunk: string): unknown };
-  stderr: { write(chunk: string): unknown };
+  stdout: { write(chunk: string | Uint8Array): unknown };
+  stderr: { write(chunk: string | Uint8Array): unknown };
 }
 
 export interface BufferedIO {
@@ -22,10 +22,14 @@ export function bufferIO(): BufferedIO {
   let err = "";
   return {
     io: {
-      stdout: { write: (chunk: string) => ((out += chunk), true) },
-      stderr: { write: (chunk: string) => ((err += chunk), true) },
+      stdout: { write: (chunk: string | Uint8Array) => ((out += toText(chunk)), true) },
+      stderr: { write: (chunk: string | Uint8Array) => ((err += toText(chunk)), true) },
     },
     stdout: () => out,
     stderr: () => err,
   };
+}
+
+function toText(chunk: string | Uint8Array): string {
+  return typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
 }

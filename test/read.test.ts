@@ -3,9 +3,13 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { followRead, readRun } from "../src/commands/read";
+import { runCli } from "../src/cli";
+import { followRead, readLog, readRun } from "../src/commands/read";
 import { runCommand } from "../src/commands/run";
 import { sendCommand } from "../src/commands/send";
+import { stopCommand } from "../src/commands/stop";
+import { bufferIO } from "../src/runtime/io";
+import { createRunMeta, saveRun } from "../src/runtime/runs";
 import { hasTmux, killTmux, tempState } from "./helpers";
 
 function uniqueRunName(prefix: string): string {
@@ -16,8 +20,41 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function createLogRun(name: string, cwd: string, status: "running" | "stopped" = "running"): Promise<string> {
+  const meta = await createRunMeta({ name, backend: "shell", cwd });
+  await saveRun({ ...meta, status, ...(status === "stopped" ? { stoppedAt: meta.createdAt } : {}) });
+  return join(process.env.XDG_STATE_HOME as string, "wux", "runs", name, "pane.log");
+}
+
+async function readLogBytes(name: string, tail?: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  await readLog({
+    name,
+    ...(tail === undefined ? {} : { tail }),
+    writer: { write: (chunk) => chunks.push(Buffer.from(chunk)) },
+  });
+  return Buffer.concat(chunks);
+}
+
+async function readLogCliBytes(name: string, stateHome: string): Promise<Buffer> {
+  const child = spawn(process.execPath, ["src/index.ts", "--local", "read", "--log", name], {
+    cwd: join(import.meta.dir, ".."),
+    env: { ...process.env, XDG_STATE_HOME: stateHome },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (!child.stdout || !child.stderr) throw new Error("expected piped child stdio");
+  const chunks: Buffer[] = [];
+  let stderr = "";
+  child.stdout.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk) => (stderr += chunk));
+  const [code, signal] = (await once(child, "close")) as [number | null, NodeJS.Signals | null];
+  expect({ code, signal, stderr }).toEqual({ code: 0, signal: null, stderr: "" });
+  return Buffer.concat(chunks);
+}
+
 describe("read", () => {
-  test("captures live pane output without mutating events and respects tail", async () => {
+  test("ordinary read remains a live tmux pane scrape", async () => {
     if (!(await hasTmux())) return;
     const temp = await tempState();
     const old = process.env.XDG_STATE_HOME;
@@ -43,6 +80,75 @@ describe("read", () => {
       if (created) await killTmux(name);
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();
+    }
+  });
+
+  test("--log reads raw pane.log bytes from live and stopped runs", async () => {
+    if (!(await hasTmux())) return;
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("read-log-live-stopped");
+    const bytes = Buffer.from([0x1b, 0x5b, 0x33, 0x31, 0x6d, 0xff, 0x0a]);
+    let created = false;
+
+    try {
+      await runCommand({ backend: "shell", name, cwd: temp.root });
+      created = true;
+      const log = join(temp.stateHome, "wux", "runs", name, "pane.log");
+      await writeFile(log, bytes);
+      expect((await readLogCliBytes(name, temp.stateHome)).subarray(0, bytes.length)).toEqual(bytes);
+
+      await stopCommand(name, true);
+      created = false;
+      expect(await readLogCliBytes(name, temp.stateHome)).toEqual(await readFile(log));
+    } finally {
+      if (created) await killTmux(name);
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("--log --tail returns exactly the last five lines", async () => {
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("read-log-tail");
+
+    try {
+      const log = await createLogRun(name, temp.root);
+      await writeFile(log, "one\ntwo\nthree\nfour\nfive\nsix\nseven\n", "utf8");
+      expect((await readLogBytes(name, 5)).toString("utf8")).toBe("three\nfour\nfive\nsix\nseven\n");
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("--log reports a clear error when pane.log is missing", async () => {
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("read-log-missing");
+
+    try {
+      await createLogRun(name, temp.root);
+      await expect(readLogBytes(name)).rejects.toThrow(`no pane log for ${name}`);
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("--log rejects incompatible read modes", async () => {
+    for (const args of [
+      ["--local", "read", "--log", "--follow", "run"],
+      ["--local", "read", "--log", "--json", "run"],
+      ["--local", "read", "--log", "--poll-interval-ms", "10", "run"],
+    ]) {
+      const memory = bufferIO();
+      expect(await runCli(args, memory.io)).toBe(1);
+      expect(`${memory.stdout()}${memory.stderr()}`).toContain("--log cannot be combined");
     }
   });
 

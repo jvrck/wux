@@ -18,6 +18,11 @@ intentionally not reproduced here.
 
 - Fixed macOS test cleanup to resolve tmux socket parents without resolving Unix sockets directly.
 
+### Added
+
+- Added `wux read --log` to stream persisted raw pane logs, including after a
+  run stops.
+
 ## 2026.10.24
 
 No breaking changes.
