@@ -1,4 +1,5 @@
 import { lastInput } from "../runtime/events";
+import { WuxError } from "../runtime/errors";
 import { listRunMetadata, listRuns, type RunMeta, type RunStatus } from "../runtime/runs";
 import {
   classifySessionLiveness,
@@ -91,14 +92,18 @@ export async function statusJsonCommand(options: StatusJsonOptions = {}): Promis
   const runs = await listRunMetadata();
   const enriched = await Promise.all(
     runs.map(async (run) => {
+      let connection: TmuxConnection;
       try {
-        const connection = connectionForMeta(run);
-        const probe = await (options.probe ?? probeSession)(run.tmuxSession, connection);
-        const liveness = classifySessionLiveness(probe);
-        return { ...run, command: run.command ?? [], liveness, derivedStatus: deriveJsonStatus(run, liveness) };
-      } catch {
-        return { ...run, command: run.command ?? [], liveness: "unavailable" as const, derivedStatus: "unknown" as const };
+        connection = connectionForMeta(run);
+      } catch (error) {
+        if (error instanceof WuxError) {
+          return { ...run, command: run.command ?? [], liveness: "unavailable" as const, derivedStatus: "unknown" as const };
+        }
+        throw error;
       }
+      const probe = await (options.probe ?? probeSession)(run.tmuxSession, connection);
+      const liveness = classifySessionLiveness(probe);
+      return { ...run, command: run.command ?? [], liveness, derivedStatus: deriveJsonStatus(run, liveness) };
     }),
   );
   return { runs: enriched };

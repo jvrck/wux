@@ -90,18 +90,22 @@ export async function loadRun(name: string): Promise<RunMeta> {
   }
 }
 
-export async function listRuns(): Promise<RunMeta[]> {
-  return readRunMetadata(true);
+export interface ListRunOptions {
+  readMeta?: (path: string) => Promise<string>;
+}
+
+export async function listRuns(options: ListRunOptions = {}): Promise<RunMeta[]> {
+  return readRunMetadata(true, options.readMeta);
 }
 
 // Status JSON deliberately permits an invalid stored socket through to its
 // per-run error handling, where it becomes `unavailable`. All other metadata
 // fields still need to be structurally sound before any command consumes them.
-export async function listRunMetadata(): Promise<RunMeta[]> {
-  return readRunMetadata(false);
+export async function listRunMetadata(options: ListRunOptions = {}): Promise<RunMeta[]> {
+  return readRunMetadata(false, options.readMeta);
 }
 
-async function readRunMetadata(validateSocket: boolean): Promise<RunMeta[]> {
+async function readRunMetadata(validateSocket: boolean, readMeta = (path: string) => readFile(path, "utf8")): Promise<RunMeta[]> {
   let entries;
   try {
     entries = await readdir(runsRoot(), { withFileTypes: true });
@@ -114,14 +118,15 @@ async function readRunMetadata(validateSocket: boolean): Promise<RunMeta[]> {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     try {
-      const raw = await readFile(join(runsRoot(), entry.name, "meta.json"), "utf8");
+      const raw = await readMeta(join(runsRoot(), entry.name, "meta.json"));
       const meta = JSON.parse(raw);
       if (!isRunMeta(meta) || meta.name !== entry.name) continue;
       if (validateSocket) connectionForMeta(meta);
       runs.push(meta);
-    } catch (error) {
-      if (error instanceof WuxError || error instanceof SyntaxError) continue;
-      throw error;
+    } catch {
+      // A run may be partially written or removed while listing. Match the
+      // historical listRuns behavior by skipping that single invalid entry.
+      continue;
     }
   }
 

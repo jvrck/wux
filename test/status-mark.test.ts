@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { markCommand } from "../src/commands/mark";
 import { formatStatusRows, statusJsonCommand, statusRows } from "../src/commands/status";
 import { runCommand } from "../src/commands/run";
-import { loadRun } from "../src/runtime/runs";
+import { listRunMetadata, listRuns, loadRun } from "../src/runtime/runs";
 import { hasTmux, killTmux, tempState } from "./helpers";
 
 function uniqueRunName(prefix: string): string {
@@ -199,4 +199,57 @@ describe("status and mark", () => {
       await temp.cleanup();
     }
   });
+
+  test("run listings skip empty and concurrently removed metadata while retaining valid runs", async () => {
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const valid = uniqueRunName("status-list-valid");
+    const removed = uniqueRunName("status-list-removed");
+
+    try {
+      await writeStatusMeta(temp.stateHome, valid, temp.root);
+      await writeStatusMeta(temp.stateHome, removed, temp.root);
+      await mkdir(join(temp.stateHome, "wux", "runs", uniqueRunName("status-list-empty")), { recursive: true });
+      const reader = async (path: string) => {
+        if (path.endsWith(`${removed}/meta.json`)) await rm(path);
+        return readFile(path, "utf8");
+      };
+      expect((await listRuns({ readMeta: reader })).map((run) => run.name)).toEqual([valid]);
+
+      await writeStatusMeta(temp.stateHome, removed, temp.root);
+      expect((await listRunMetadata({ readMeta: reader })).map((run) => run.name)).toEqual([valid]);
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("status json propagates unexpected probe errors", async () => {
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("status-probe-error");
+    try {
+      await writeStatusMeta(temp.stateHome, name, temp.root);
+      await expect(statusJsonCommand({ probe: async () => { throw new Error("probe failure"); } })).rejects.toThrow("probe failure");
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
 });
+
+async function writeStatusMeta(stateHome: string, name: string, cwd: string): Promise<void> {
+  const dir = join(stateHome, "wux", "runs", name);
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "meta.json"), `${JSON.stringify({
+    name,
+    backend: "shell",
+    tmuxSession: `wux_${name}`,
+    cwd,
+    owner: "test-owner",
+    createdAt: "2026-06-08T00:00:00.000Z",
+    status: "running",
+  })}\n`, "utf8");
+}
