@@ -162,7 +162,7 @@ describe("read", () => {
 
       const lines = Array.from({ length: 12_000 }, (_, index) => `line-${index}\n`);
       await writeFile(log, lines.join(""), "utf8");
-      expect((await readLogBytes(name, 5)).toString("utf8")).toBe(lines.slice(-5).join(""));
+      expect((await readLogBytes(name, 8_000)).toString("utf8")).toBe(lines.slice(-8_000).join(""));
     } finally {
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();
@@ -193,6 +193,7 @@ describe("read", () => {
             return retained.length === 1 ? false : true;
           },
           once: (_event, listener) => {
+            if (_event !== "drain") return;
             setTimeout(() => {
               writesBeforeDrain = retained.length;
               listener();
@@ -218,6 +219,35 @@ describe("read", () => {
     try {
       await createLogRun(name, temp.root);
       await expect(readLogBytes(name)).rejects.toThrow(`no pane log for ${name}`);
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("--log stops cleanly when the output closes during backpressure", async () => {
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("read-log-close");
+
+    try {
+      const log = await createLogRun(name, temp.root);
+      await writeFile(log, Buffer.alloc(128 * 1024, 0xff));
+      let writes = 0;
+      await readLog({
+        name,
+        writer: {
+          write: () => {
+            writes += 1;
+            return false;
+          },
+          once: (event, listener) => {
+            if (event === "close") setTimeout(listener, 0);
+          },
+        },
+      });
+      expect(writes).toBe(1);
     } finally {
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();

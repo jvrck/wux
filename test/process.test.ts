@@ -39,6 +39,48 @@ describe("runProcess", () => {
       rmSync(marker, { force: true });
     }
   });
+
+  test("streams raw stdout chunks with backpressure instead of replaying a collected buffer", async () => {
+    const source = Buffer.allocUnsafe(256 * 1024 + 19);
+    for (let index = 0; index < source.length; index += 1) source[index] = index % 251;
+    source[0] = 0x00;
+    source[128 * 1024 - 1] = 0xff;
+    source[128 * 1024] = 0x00;
+    const program = [
+      "const first = Buffer.allocUnsafe(128 * 1024);",
+      `const second = Buffer.allocUnsafe(${source.length - 128 * 1024});`,
+      "for (let index = 0; index < first.length; index += 1) first[index] = index % 251;",
+      "for (let index = 0; index < second.length; index += 1) second[index] = (index + first.length) % 251;",
+      "first[0] = 0x00; first[first.length - 1] = 0xff; second[0] = 0x00;",
+      "process.stdout.write(first);",
+      "setTimeout(() => { process.stdout.write(second); process.stderr.write('stream stderr\\n'); process.exit(7); }, 20);",
+    ].join("\n");
+    const retained: Uint8Array[] = [];
+    let writesBeforeDrain = 0;
+    let writesBeforeExit = 0;
+
+    const result = await runProcess([process.execPath, "-e", program], {
+      stdoutWriter: {
+        write: (chunk) => {
+          retained.push(chunk);
+          writesBeforeExit += 1;
+          return retained.length === 1 ? false : true;
+        },
+        once: (event, listener) => {
+          if (event !== "drain") return;
+          setTimeout(() => {
+            writesBeforeDrain = retained.length;
+            listener();
+          }, 10);
+        },
+      },
+    });
+
+    expect(result).toMatchObject({ code: 7, stdout: "", stderr: "stream stderr\n" });
+    expect(writesBeforeExit).toBeGreaterThan(1);
+    expect(writesBeforeDrain).toBe(1);
+    expect(Buffer.concat(retained.map((chunk) => Buffer.from(chunk)))).toEqual(source);
+  });
 });
 
 describe("processCommandName", () => {

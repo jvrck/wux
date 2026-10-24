@@ -15,7 +15,8 @@ export interface ReadOptions {
 
 type ByteWriter = {
   write(chunk: Uint8Array): unknown;
-  once?: (event: "drain", listener: () => void) => unknown;
+  once?: (event: "drain" | "close" | "error", listener: () => void) => unknown;
+  removeListener?: (event: "drain" | "close" | "error", listener: () => void) => unknown;
 };
 
 export interface ReadLogOptions {
@@ -178,7 +179,7 @@ async function emitLogBytes(path: string, offset: number, writer: ByteWriter): P
       const chunk = Buffer.allocUnsafe(length);
       const bytesRead = await readRange(handle, chunk, cursor, length);
       if (bytesRead === 0) break;
-      if (writer.write(chunk.subarray(0, bytesRead)) === false) await waitForDrain(writer);
+      if (writer.write(chunk.subarray(0, bytesRead)) === false && !(await waitForDrain(writer))) return;
       cursor += bytesRead;
     }
   } finally {
@@ -228,9 +229,25 @@ async function readRange(handle: FileHandle, buffer: Uint8Array, position: numbe
   return bytesRead;
 }
 
-function waitForDrain(writer: ByteWriter): Promise<void> {
-  if (!writer.once) throw new WuxError("log output does not support drain backpressure");
-  return new Promise((resolve) => writer.once?.("drain", resolve));
+function waitForDrain(writer: ByteWriter): Promise<boolean> {
+  const once = writer.once;
+  if (!once) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (writable: boolean) => {
+      if (settled) return;
+      settled = true;
+      writer.removeListener?.("drain", onDrain);
+      writer.removeListener?.("close", onClose);
+      writer.removeListener?.("error", onClose);
+      resolve(writable);
+    };
+    const onDrain = () => done(true);
+    const onClose = () => done(false);
+    once("drain", onDrain);
+    once("close", onClose);
+    once("error", onClose);
+  });
 }
 
 async function fileSize(path: string): Promise<number> {

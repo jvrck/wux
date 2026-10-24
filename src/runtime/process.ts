@@ -11,7 +11,23 @@ export interface ProcessResult {
   stderr: string;
 }
 
-export function runProcess(args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; rawStdout?: boolean } = {}): Promise<ProcessResult> {
+export interface ProcessStdoutWriter {
+  write(chunk: Uint8Array): unknown;
+  once?: (event: "drain" | "close" | "error", listener: () => void) => unknown;
+  removeListener?: (event: "drain" | "close" | "error", listener: () => void) => unknown;
+}
+
+export interface ProcessOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+  rawStdout?: boolean;
+  // Stream stdout to this writer without accumulating it. Used only for the
+  // binary `read --log` forwarding path; ordinary commands keep capture/replay.
+  stdoutWriter?: ProcessStdoutWriter;
+}
+
+export function runProcess(args: string[], options: ProcessOptions = {}): Promise<ProcessResult> {
   return new Promise((resolve) => {
     const [command, ...commandArgs] = args;
     const child = spawn(command, commandArgs, { cwd: options.cwd, env: options.env, stdio: ["ignore", "pipe", "pipe"] });
@@ -28,11 +44,22 @@ export function runProcess(args: string[], options: { cwd?: string; env?: NodeJS
       }
     };
 
-    if (!options.rawStdout) child.stdout.setEncoding("utf8");
+    if (!options.rawStdout && !options.stdoutWriter) child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string | Buffer) => {
-      if (options.rawStdout) stdoutChunks.push(Buffer.from(chunk));
-      else stdout += chunk;
+      if (options.stdoutWriter) {
+        const bytes = Buffer.from(chunk);
+        if (options.stdoutWriter.write(bytes) === false) {
+          child.stdout.pause();
+          void waitForWritable(options.stdoutWriter).then((writable) => {
+            if (writable && !settled) child.stdout.resume();
+          });
+        }
+      } else if (options.rawStdout) {
+        stdoutChunks.push(Buffer.from(chunk));
+      } else {
+        stdout += chunk;
+      }
     });
     child.stderr.on("data", (chunk) => (stderr += chunk));
     child.on("error", (error) => {
@@ -78,6 +105,27 @@ export function runProcess(args: string[], options: { cwd?: string; env?: NodeJS
         });
       }, options.timeoutMs);
     }
+  });
+}
+
+function waitForWritable(writer: ProcessStdoutWriter): Promise<boolean> {
+  const once = writer.once;
+  if (!once) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (writable: boolean) => {
+      if (settled) return;
+      settled = true;
+      writer.removeListener?.("drain", onDrain);
+      writer.removeListener?.("close", onClose);
+      writer.removeListener?.("error", onClose);
+      resolve(writable);
+    };
+    const onDrain = () => done(true);
+    const onClose = () => done(false);
+    once("drain", onDrain);
+    once("close", onClose);
+    once("error", onClose);
   });
 }
 

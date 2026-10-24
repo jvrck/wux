@@ -490,6 +490,8 @@ describe("dispatch", () => {
     expect(__test.forwardTimeoutForCommand("wait")).toBe(0);
     expect(__test.forwardTimeoutForCommand("read", ["--follow", "run-name"])).toBe(0);
     expect(__test.forwardTimeoutForCommand("read", ["run-name", "--follow"])).toBe(0);
+    expect(__test.forwardTimeoutForCommand("read", ["--log", "run-name"])).toBe(0);
+    expect(__test.forwardTimeoutForCommand("read", ["run-name", "--log"])).toBe(0);
     expect(__test.forwardTimeoutForCommand("read", ["run-name"])).toBeUndefined();
     expect(__test.forwardTimeoutForCommand("status")).toBeUndefined();
   });
@@ -573,14 +575,15 @@ describe("dispatch", () => {
   });
 
   test("read parsing accepts follow before or after the run name and rejects structured follow", () => {
-    expect(__test.parseReadArgs(["--follow", "r"])).toEqual({ name: "r", json: false, follow: true });
+    expect(__test.parseReadArgs(["--follow", "r"])).toEqual({ name: "r", json: false, log: false, follow: true });
     expect(__test.parseReadArgs(["r", "--follow", "--poll-interval-ms", "100"])).toEqual({
       name: "r",
       json: false,
+      log: false,
       follow: true,
       pollIntervalMs: 100,
     });
-    expect(__test.parseReadArgs(["r", "--tail", "5", "--json"])).toEqual({ name: "r", tail: 5, json: true, follow: false });
+    expect(__test.parseReadArgs(["r", "--tail", "5", "--json"])).toEqual({ name: "r", tail: 5, json: true, log: false, follow: false });
     expect(() => __test.parseReadArgs(["--follow", "--json", "r"])).not.toThrow();
     expect(() => __test.parseReadArgs(["--follow", "r", "--grep", "needle"])).toThrow(
       "unknown option: --grep (options: --tail <lines>, --json, --follow, --poll-interval-ms <ms>, --help, -h; see 'wux read --help')",
