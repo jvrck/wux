@@ -113,6 +113,31 @@ export async function listRuns(): Promise<RunMeta[]> {
   return runs.sort((left, right) => left.name.localeCompare(right.name));
 }
 
+// Status JSON must describe bad stored socket metadata as unavailable instead
+// of silently omitting that run. Other command paths retain `listRuns`'s
+// fail-closed validation behavior.
+export async function listRunMetadata(): Promise<RunMeta[]> {
+  let entries;
+  try {
+    entries = await readdir(runsRoot(), { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+
+  const runs: RunMeta[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    try {
+      const raw = await readFile(join(runsRoot(), entry.name, "meta.json"), "utf8");
+      runs.push(JSON.parse(raw) as RunMeta);
+    } catch {
+      // Preserve listRuns' behavior for malformed metadata.
+    }
+  }
+  return runs.sort((left, right) => left.name.localeCompare(right.name));
+}
+
 export async function markRun(name: string, status: MarkStatus): Promise<RunMeta> {
   const meta = await loadRun(name);
   const connection = connectionForMeta(meta);

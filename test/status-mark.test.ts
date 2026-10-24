@@ -85,7 +85,7 @@ describe("status and mark", () => {
     await expect(markCommand("any-run", "paused" as never)).rejects.toThrow("invalid status");
   });
 
-  test("status json includes a command key for legacy metadata", async () => {
+  test("absent liveness has derivedStatus unknown while raw status remains running", async () => {
     const temp = await tempState();
     const old = process.env.XDG_STATE_HOME;
     process.env.XDG_STATE_HOME = temp.stateHome;
@@ -118,6 +118,66 @@ describe("status and mark", () => {
       expect(Object.hasOwn(row as object, "command")).toBe(true);
       expect(row?.command).toEqual([]);
       expect(row).toMatchObject({ status: "running", liveness: "absent", derivedStatus: "unknown" });
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("unreachable stored socket has unavailable liveness and unknown derived status", async () => {
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("status-unavailable");
+
+    try {
+      const dir = join(temp.stateHome, "wux", "runs", name);
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, "meta.json"), `${JSON.stringify({
+        name,
+        backend: "shell",
+        tmuxSession: `wux_${name}`,
+        tmuxSocketPath: join(temp.root, "missing.sock"),
+        cwd: temp.root,
+        owner: "test@host",
+        createdAt: "2026-06-08T00:00:00.000Z",
+        status: "running",
+      })}\n`, "utf8");
+
+      expect((await statusJsonCommand()).runs.find((run) => run.name === name)).toMatchObject({
+        status: "running",
+        liveness: "unavailable",
+        derivedStatus: "unknown",
+      });
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("invalid tmuxSocketPath is unavailable and status json command succeeds", async () => {
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("status-invalid-socket");
+
+    try {
+      const dir = join(temp.stateHome, "wux", "runs", name);
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, "meta.json"), `${JSON.stringify({
+        name,
+        backend: "shell",
+        tmuxSession: `wux_${name}`,
+        tmuxSocketPath: "not-an-absolute-path",
+        cwd: temp.root,
+        owner: "test@host",
+        createdAt: "2026-06-08T00:00:00.000Z",
+        status: "running",
+      })}\n`, "utf8");
+
+      await expect(statusJsonCommand()).resolves.toMatchObject({
+        runs: [expect.objectContaining({ name, liveness: "unavailable", derivedStatus: "unknown" })],
+      });
     } finally {
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();

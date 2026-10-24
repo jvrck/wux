@@ -1,5 +1,5 @@
 import { lastInput } from "../runtime/events";
-import { listRuns, type RunMeta, type RunStatus } from "../runtime/runs";
+import { listRunMetadata, listRuns, type RunMeta, type RunStatus } from "../runtime/runs";
 import { connectionForMeta, hasSession, probeSession, type TmuxSessionState } from "../runtime/tmux";
 
 export type DisplayStatus = RunStatus | "unknown";
@@ -76,18 +76,25 @@ export async function statusCommand(): Promise<StatusResult> {
 }
 
 export async function statusJsonCommand(): Promise<StatusJsonResult> {
-  const runs = await listRuns();
+  const runs = await listRunMetadata();
   const enriched = await Promise.all(
     runs.map(async (run) => {
       try {
-        const probe = await probeSession(run.tmuxSession, connectionForMeta(run));
-        return { ...run, command: run.command ?? [], liveness: probe.state, derivedStatus: deriveJsonStatus(run, probe.state) };
+        const connection = connectionForMeta(run);
+        const probe = await probeSession(run.tmuxSession, connection);
+        const liveness = storedSocketUnavailable(connection.socketPath, probe.state, probe.detail);
+        return { ...run, command: run.command ?? [], liveness, derivedStatus: deriveJsonStatus(run, liveness) };
       } catch {
         return { ...run, command: run.command ?? [], liveness: "unavailable" as const, derivedStatus: "unknown" as const };
       }
     }),
   );
   return { runs: enriched };
+}
+
+function storedSocketUnavailable(socketPath: string | undefined, state: TmuxSessionState, detail: string | undefined): TmuxSessionState {
+  if (socketPath !== undefined && state === "absent" && !/can't find session/i.test(detail ?? "")) return "unavailable";
+  return state;
 }
 
 function deriveJsonStatus(run: RunMeta, liveness: TmuxSessionState): DisplayStatus {
