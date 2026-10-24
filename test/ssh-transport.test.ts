@@ -264,6 +264,23 @@ describe("ssh transport", () => {
     expect(memory.output()).toEqual({ stdout: "remote out\n", stderr: "remote err\n" });
   });
 
+  test("passes raw read-log bytes from an injected SSH runner unchanged", async () => {
+    const bytes = Buffer.from([0x00, 0xff, 0x1b, 0x5b, 0x6d]);
+    const stdout: Buffer[] = [];
+    const code = await forwardSshCommand({
+      host: "worker",
+      args: ["read", "--log", "r"],
+      io: {
+        stdout: { write: (chunk) => stdout.push(Buffer.from(chunk)) },
+        stderr: { write: () => undefined },
+      },
+      runner: async (): Promise<ProcessResult> => ({ code: 0, stdout: "", stdoutBytes: bytes, stderr: "" }),
+    });
+
+    expect(code).toBe(0);
+    expect(Buffer.concat(stdout)).toEqual(bytes);
+  });
+
   test("runCli forwards host commands and preserves quoted text arguments", async () => {
     const memory = memoryIO();
     const calls: string[][] = [];

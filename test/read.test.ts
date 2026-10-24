@@ -109,6 +109,23 @@ describe("read", () => {
     }
   });
 
+  test("--log reads a stopped run without tmux byte-for-byte", async () => {
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("read-log-stopped");
+    const bytes = Buffer.from([0x00, 0xff, 0x1b, 0x5b, 0x6d, 0x0a]);
+
+    try {
+      const log = await createLogRun(name, temp.root, "stopped");
+      await writeFile(log, bytes);
+      expect(await readLogCliBytes(name, temp.stateHome)).toEqual(bytes);
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
   test("--log --tail returns exactly the last five lines", async () => {
     const temp = await tempState();
     const old = process.env.XDG_STATE_HOME;
@@ -119,6 +136,73 @@ describe("read", () => {
       const log = await createLogRun(name, temp.root);
       await writeFile(log, "one\ntwo\nthree\nfour\nfive\nsix\nseven\n", "utf8");
       expect((await readLogBytes(name, 5)).toString("utf8")).toBe("three\nfour\nfive\nsix\nseven\n");
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("--log --tail handles boundary cases and scans backward across chunks", async () => {
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("read-log-tail-edges");
+
+    try {
+      const log = await createLogRun(name, temp.root);
+      for (const { body, tail, expected } of [
+        { body: "one\ntwo\nthree", tail: 2, expected: "two\nthree" },
+        { body: "one\ntwo\n", tail: 5, expected: "one\ntwo\n" },
+        { body: "", tail: 1, expected: "" },
+        { body: "\n", tail: 1, expected: "\n" },
+      ]) {
+        await writeFile(log, body, "utf8");
+        expect((await readLogBytes(name, tail)).toString("utf8")).toBe(expected);
+      }
+
+      const lines = Array.from({ length: 12_000 }, (_, index) => `line-${index}\n`);
+      await writeFile(log, lines.join(""), "utf8");
+      expect((await readLogBytes(name, 5)).toString("utf8")).toBe(lines.slice(-5).join(""));
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("--log gives retained chunks unique bytes and waits for drain before reading again", async () => {
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("read-log-backpressure");
+    const source = Buffer.allocUnsafe(256 * 1024 + 17);
+    for (let index = 0; index < source.length; index += 1) source[index] = index % 251;
+    source[0] = 0x00;
+    source[64 * 1024 - 1] = 0xff;
+    source[64 * 1024] = 0x00;
+
+    try {
+      const log = await createLogRun(name, temp.root);
+      await writeFile(log, source);
+      const retained: Uint8Array[] = [];
+      let writesBeforeDrain = 0;
+      await readLog({
+        name,
+        writer: {
+          write: (chunk) => {
+            retained.push(chunk);
+            return retained.length === 1 ? false : true;
+          },
+          once: (_event, listener) => {
+            setTimeout(() => {
+              writesBeforeDrain = retained.length;
+              listener();
+            }, 10);
+          },
+        },
+      });
+
+      expect(writesBeforeDrain).toBe(1);
+      expect(Buffer.concat(retained.map((chunk) => Buffer.from(chunk)))).toEqual(source);
     } finally {
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();

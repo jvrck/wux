@@ -1,4 +1,4 @@
-import { open, stat } from "node:fs/promises";
+import { open, stat, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { WuxError } from "../runtime/errors";
@@ -13,7 +13,10 @@ export interface ReadOptions {
   intervalMs?: number;
 }
 
-type ByteWriter = { write(chunk: Uint8Array): unknown };
+type ByteWriter = {
+  write(chunk: Uint8Array): unknown;
+  once?: (event: "drain", listener: () => void) => unknown;
+};
 
 export interface ReadLogOptions {
   name: string;
@@ -167,13 +170,15 @@ async function emitLogBytes(path: string, offset: number, writer: ByteWriter): P
   const handle = await open(path, "r");
   try {
     const size = (await handle.stat()).size;
-    const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, Math.max(size - offset, 1)));
     let cursor = offset;
     while (cursor < size) {
-      const length = Math.min(buffer.length, size - cursor);
-      const { bytesRead } = await handle.read(buffer, 0, length, cursor);
+      const length = Math.min(64 * 1024, size - cursor);
+      // Each output chunk owns its backing buffer: writers may retain it after
+      // write() returns, so it must never be reused by a later filesystem read.
+      const chunk = Buffer.allocUnsafe(length);
+      const bytesRead = await readRange(handle, chunk, cursor, length);
       if (bytesRead === 0) break;
-      writer.write(buffer.subarray(0, bytesRead));
+      if (writer.write(chunk.subarray(0, bytesRead)) === false) await waitForDrain(writer);
       cursor += bytesRead;
     }
   } finally {
@@ -191,7 +196,7 @@ async function tailStart(path: string, lines: number): Promise<number> {
     if (size === 0) return 0;
 
     const finalByte = Buffer.allocUnsafe(1);
-    await handle.read(finalByte, 0, 1, size - 1);
+    if ((await readRange(handle, finalByte, size - 1, 1)) !== 1) return 0;
     const separatorsNeeded = lines + (finalByte[0] === 0x0a ? 1 : 0);
     const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, size));
     let cursor = size;
@@ -199,7 +204,7 @@ async function tailStart(path: string, lines: number): Promise<number> {
 
     while (cursor > 0) {
       const start = Math.max(0, cursor - buffer.length);
-      const { bytesRead } = await handle.read(buffer, 0, cursor - start, start);
+      const bytesRead = await readRange(handle, buffer, start, cursor - start);
       for (let index = bytesRead - 1; index >= 0; index -= 1) {
         if (buffer[index] !== 0x0a) continue;
         separators += 1;
@@ -211,6 +216,21 @@ async function tailStart(path: string, lines: number): Promise<number> {
   } finally {
     await handle.close();
   }
+}
+
+async function readRange(handle: FileHandle, buffer: Uint8Array, position: number, length: number): Promise<number> {
+  let bytesRead = 0;
+  while (bytesRead < length) {
+    const result = await handle.read(buffer, bytesRead, length - bytesRead, position + bytesRead);
+    if (result.bytesRead === 0) break;
+    bytesRead += result.bytesRead;
+  }
+  return bytesRead;
+}
+
+function waitForDrain(writer: ByteWriter): Promise<void> {
+  if (!writer.once) throw new WuxError("log output does not support drain backpressure");
+  return new Promise((resolve) => writer.once?.("drain", resolve));
 }
 
 async function fileSize(path: string): Promise<number> {

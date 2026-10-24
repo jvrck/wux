@@ -38,6 +38,13 @@ describe("bufferIO", () => {
     expect(buffer.stdout()).toBe("hello world");
     expect(buffer.stderr()).toBe("oops");
   });
+
+  test("decodes UTF-8 bytes split across writes without replacement characters", () => {
+    const buffer = bufferIO();
+    buffer.io.stdout.write(Buffer.from([0xe2]));
+    buffer.io.stdout.write(Buffer.from([0x82, 0xac]));
+    expect(buffer.stdout()).toBe("€");
+  });
 });
 
 describe("events lastInput reader", () => {

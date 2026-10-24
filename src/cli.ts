@@ -151,7 +151,7 @@ also works after a run stops. It cannot be combined with --json, --follow, or
 --poll-interval-ms.
 --follow streams appended pane.log bytes until interrupted or the tmux session
 ends. It is a raw stream for pipe composition and cannot be combined with
---json or --tail.
+--json, --tail, or --log.
 `,
   status: `Usage:
   wux status [--json]
