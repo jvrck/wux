@@ -126,6 +126,17 @@ export function isDefinitivelyAbsentTmuxDetail(detail: string): boolean {
   return /can't find session|no server running on|no such file or directory|connection refused/i.test(detail);
 }
 
+// `probeSession` preserves the raw tmux outcome for compatibility with legacy
+// callers. State-changing consumers must use this classifier: only a server
+// response that identifies a missing session is definitive. A missing socket,
+// connection refusal, or permission error cannot prove that the run is gone.
+export function classifySessionLiveness(probe: TmuxSessionProbe): TmuxSessionState {
+  if (probe.state !== "absent") return probe.state;
+  const detail = probe.detail ?? "";
+  if (!isDefinitivelyAbsentTmuxDetail(detail)) return "unavailable";
+  return /can't find session/i.test(detail) ? "absent" : "unavailable";
+}
+
 export async function hasSession(session: string, connection: TmuxConnection = ambientTmuxConnection()): Promise<boolean> {
   return (await probeSession(session, connection)).state === "live";
 }

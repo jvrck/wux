@@ -91,32 +91,17 @@ export async function loadRun(name: string): Promise<RunMeta> {
 }
 
 export async function listRuns(): Promise<RunMeta[]> {
-  let entries;
-  try {
-    entries = await readdir(runsRoot(), { withFileTypes: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw error;
-  }
-
-  const runs: RunMeta[] = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    try {
-      runs.push(await loadRun(entry.name));
-    } catch (error) {
-      if (error instanceof WuxError || error instanceof SyntaxError) continue;
-      throw error;
-    }
-  }
-
-  return runs.sort((left, right) => left.name.localeCompare(right.name));
+  return readRunMetadata(true);
 }
 
-// Status JSON must describe bad stored socket metadata as unavailable instead
-// of silently omitting that run. Other command paths retain `listRuns`'s
-// fail-closed validation behavior.
+// Status JSON deliberately permits an invalid stored socket through to its
+// per-run error handling, where it becomes `unavailable`. All other metadata
+// fields still need to be structurally sound before any command consumes them.
 export async function listRunMetadata(): Promise<RunMeta[]> {
+  return readRunMetadata(false);
+}
+
+async function readRunMetadata(validateSocket: boolean): Promise<RunMeta[]> {
   let entries;
   try {
     entries = await readdir(runsRoot(), { withFileTypes: true });
@@ -130,12 +115,41 @@ export async function listRunMetadata(): Promise<RunMeta[]> {
     if (!entry.isDirectory()) continue;
     try {
       const raw = await readFile(join(runsRoot(), entry.name, "meta.json"), "utf8");
-      runs.push(JSON.parse(raw) as RunMeta);
-    } catch {
-      // Preserve listRuns' behavior for malformed metadata.
+      const meta = JSON.parse(raw);
+      if (!isRunMeta(meta) || meta.name !== entry.name) continue;
+      if (validateSocket) connectionForMeta(meta);
+      runs.push(meta);
+    } catch (error) {
+      if (error instanceof WuxError || error instanceof SyntaxError) continue;
+      throw error;
     }
   }
+
   return runs.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function isRunMeta(value: unknown): value is RunMeta {
+  if (!value || typeof value !== "object") return false;
+  const meta = value as Record<string, unknown>;
+  if (
+    typeof meta.name !== "string" ||
+    !isValidRunName(meta.name) ||
+    typeof meta.tmuxSession !== "string" ||
+    typeof meta.cwd !== "string" ||
+    typeof meta.owner !== "string" ||
+    typeof meta.createdAt !== "string" ||
+    !["shell", "claude", "codex", "grok"].includes(meta.backend as string) ||
+    !["running", "waiting", "blocked", "stopped"].includes(meta.status as string)
+  ) return false;
+  return (meta.command === undefined || isStringArray(meta.command)) && (meta.backendArgs === undefined || isStringArray(meta.backendArgs));
+}
+
+function isValidRunName(name: string): boolean {
+  return RUN_NAME_RE.test(name) && name !== "." && name !== "..";
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 export async function markRun(name: string, status: MarkStatus): Promise<RunMeta> {

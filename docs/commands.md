@@ -329,9 +329,9 @@ wux mark smoke blocked
 
 `status` lists known runs with `NAME`, `BACKEND`, `STATUS`, `OWNER`, and `CWD`. Live tmux sessions show `running` unless they were manually marked `waiting` or `blocked`. Missing tmux sessions show `unknown` unless the run was explicitly marked `stopped`.
 
-`status --json` prints persisted metadata plus derived `liveness` (`live`,
-`absent`, or `unavailable`) and `derivedStatus`. The `status` field remains the
-cached value and is not proof that a tmux session is live.
+`status --json` prints persisted metadata plus `status` (the cached value),
+derived `liveness` (`live`, `absent`, or `unavailable`), and `derivedStatus`.
+Cached `status` is not proof that a tmux session is live.
 
 `mark` updates run metadata and appends a structured mark event. Active marks (`waiting`, `blocked`, and `running`) require the tmux session to still exist; `stopped` can only be applied to historical run state after the session is gone.
 
@@ -420,7 +420,7 @@ wux prune --older-than 0s --dry-run   # name every stopped run; delete nothing
 wux prune --prefix batch- --reconcile --older-than 0 --dry-run
 ```
 
-`prune` scans run state under `$XDG_STATE_HOME/wux/runs` or `~/.local/state/wux/runs`, skips active metadata and live tmux sessions, and removes only stopped run directories older than the cutoff. `--prefix` narrows that scan to run names beginning with the supplied plain-text prefix. `--dry-run` reports candidates without deleting them. `--reconcile` explicitly finalizes active records only when their tmux session is definitively absent; unavailable servers are never reconciled. The default retention is 30 days.
+`prune` scans run state under `$XDG_STATE_HOME/wux/runs` or `~/.local/state/wux/runs`, skips active metadata and live tmux sessions, and removes only stopped run directories older than the cutoff. `--prefix` narrows that scan to run names beginning with the supplied plain-text prefix. `--dry-run` names each candidate directory without deleting it and never lists a running run as a candidate. With `--reconcile`, dry-run prints `would reconcile and prune <name>` when one pass would perform both steps, or `would reconcile <name>` when the age cutoff would keep it. `--reconcile` explicitly finalizes active records only when their tmux session is definitively absent; unavailable servers are never reconciled. The default retention is 30 days. Prune is explicit only; normal commands never auto-delete logs.
 
 ### Age selection
 

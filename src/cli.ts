@@ -196,7 +196,8 @@ age" path for disposable cleanup; it ignores the retention timestamp so even a
 seconds-old stopped run is selected. --dry-run names the candidate run dirs and
 deletes nothing. --prefix narrows selection by run-name prefix. --reconcile
 finalizes active runs only when their session is definitively absent; unavailable
-servers are never reconciled.
+servers are never reconciled. With both flags, output says "would reconcile and
+prune" when one pass would do both.
 `,
   upgrade: `Usage:
   wux upgrade [--check] [--yes]
@@ -575,7 +576,9 @@ async function dispatch(parsed: ParsedGlobal, io: CliIO, deps: CliDeps = {}): Pr
       const olderThanMs = parseAgeOption(takeValue(args, "--older-than"), "--older-than");
       const days = parsePositiveIntegerOption(takeIntegerValue(args, "--days"), "--days");
       const prefix = takeValue(args, "--prefix");
-      if (prefix !== undefined && !/^[a-zA-Z0-9._-]+$/.test(prefix)) throw new WuxError("--prefix must be a run-name prefix");
+      if (prefix !== undefined && (!/^[a-zA-Z0-9._-]+$/.test(prefix) || prefix.startsWith("-"))) {
+        throw new WuxError("--prefix must be a run-name prefix");
+      }
       const reconcile = takeFlag(args, "--reconcile");
       const dryRun = takeFlag(args, "--dry-run");
       rejectUnknownOptions(args);

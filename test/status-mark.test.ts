@@ -85,7 +85,7 @@ describe("status and mark", () => {
     await expect(markCommand("any-run", "paused" as never)).rejects.toThrow("invalid status");
   });
 
-  test("absent liveness has derivedStatus unknown while raw status remains running", async () => {
+  test("status json preserves legacy command while absent liveness has derivedStatus unknown", async () => {
     const temp = await tempState();
     const old = process.env.XDG_STATE_HOME;
     process.env.XDG_STATE_HOME = temp.stateHome;
@@ -112,7 +112,7 @@ describe("status and mark", () => {
         "utf8",
       );
 
-      const result = await statusJsonCommand();
+      const result = await statusJsonCommand({ probe: async () => ({ state: "absent", detail: "can't find session" }) });
       const row = result.runs.find((run) => run.name === name);
       expect(row).toBeDefined();
       expect(Object.hasOwn(row as object, "command")).toBe(true);
@@ -178,6 +178,22 @@ describe("status and mark", () => {
       await expect(statusJsonCommand()).resolves.toMatchObject({
         runs: [expect.objectContaining({ name, liveness: "unavailable", derivedStatus: "unknown" })],
       });
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("status json skips structurally malformed metadata objects", async () => {
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("status-malformed");
+    try {
+      const dir = join(temp.stateHome, "wux", "runs", name);
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, "meta.json"), `${JSON.stringify({ name, status: "running" })}\n`, "utf8");
+      await expect(statusJsonCommand()).resolves.toEqual({ runs: [] });
     } finally {
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();

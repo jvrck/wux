@@ -1,6 +1,14 @@
 import { lastInput } from "../runtime/events";
 import { listRunMetadata, listRuns, type RunMeta, type RunStatus } from "../runtime/runs";
-import { connectionForMeta, hasSession, probeSession, type TmuxSessionState } from "../runtime/tmux";
+import {
+  classifySessionLiveness,
+  connectionForMeta,
+  hasSession,
+  probeSession,
+  type TmuxConnection,
+  type TmuxSessionProbe,
+  type TmuxSessionState,
+} from "../runtime/tmux";
 
 export type DisplayStatus = RunStatus | "unknown";
 
@@ -23,6 +31,10 @@ export type StatusJsonRun = RunMeta & { command: string[]; liveness: TmuxSession
 
 export interface StatusJsonResult {
   runs: StatusJsonRun[];
+}
+
+export interface StatusJsonOptions {
+  probe?: (session: string, connection: TmuxConnection) => Promise<TmuxSessionProbe>;
 }
 
 export async function statusRows(): Promise<StatusRow[]> {
@@ -75,14 +87,14 @@ export async function statusCommand(): Promise<StatusResult> {
   return { rows: await statusRows() };
 }
 
-export async function statusJsonCommand(): Promise<StatusJsonResult> {
+export async function statusJsonCommand(options: StatusJsonOptions = {}): Promise<StatusJsonResult> {
   const runs = await listRunMetadata();
   const enriched = await Promise.all(
     runs.map(async (run) => {
       try {
         const connection = connectionForMeta(run);
-        const probe = await probeSession(run.tmuxSession, connection);
-        const liveness = storedSocketUnavailable(connection.socketPath, probe.state, probe.detail);
+        const probe = await (options.probe ?? probeSession)(run.tmuxSession, connection);
+        const liveness = classifySessionLiveness(probe);
         return { ...run, command: run.command ?? [], liveness, derivedStatus: deriveJsonStatus(run, liveness) };
       } catch {
         return { ...run, command: run.command ?? [], liveness: "unavailable" as const, derivedStatus: "unknown" as const };
@@ -90,11 +102,6 @@ export async function statusJsonCommand(): Promise<StatusJsonResult> {
     }),
   );
   return { runs: enriched };
-}
-
-function storedSocketUnavailable(socketPath: string | undefined, state: TmuxSessionState, detail: string | undefined): TmuxSessionState {
-  if (socketPath !== undefined && state === "absent" && !/can't find session/i.test(detail ?? "")) return "unavailable";
-  return state;
 }
 
 function deriveJsonStatus(run: RunMeta, liveness: TmuxSessionState): DisplayStatus {

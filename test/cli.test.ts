@@ -261,7 +261,7 @@ describe("dispatch", () => {
   });
 
   test("rejects invalid prune prefixes", async () => {
-    for (const args of [["prune", "--prefix", ""], ["prune", "--prefix", "a/b"], ["prune", "--prefix", "*"], ["prune", "--prefix"]]) {
+    for (const args of [["prune", "--prefix", ""], ["prune", "--prefix", "a/b"], ["prune", "--prefix", "*"], ["prune", "--prefix"], ["prune", "--prefix", "--reconcile"]]) {
       const result = await run(args);
       expect(result.code).toBe(1);
       expect(result.stderr).toContain("--prefix");
