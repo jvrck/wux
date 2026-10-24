@@ -310,7 +310,6 @@ describe("ssh transport", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
-
   test("runCli forwards host commands and preserves quoted text arguments", async () => {
     const memory = memoryIO();
     const calls: string[][] = [];
