@@ -10,10 +10,18 @@ intentionally not reproduced here.
 
 ## Unreleased
 
+## 2026.10.24
+
+No breaking changes.
+
 ### Added
 
 - Added `wux read --log` to stream persisted raw pane logs, including after a
   run stops.
+- Added derived tmux liveness to JSON status output and explicit prune
+  reconciliation and prefix selection.
+- Added type-prefixed issue templates and CONTRIBUTING guidance for the
+  nine-section issue format.
 
 ### Security
 
@@ -26,8 +34,6 @@ intentionally not reproduced here.
   test cleanup against servers outside test-owned socket roots.
 - Accepted command options before or after a run name for stop, interrupt, wait,
   result, and handoff.
-- Added derived tmux liveness to JSON status output and explicit prune
-  reconciliation and prefix selection.
 
 ## 2026.10.17
 
