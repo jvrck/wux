@@ -4,14 +4,19 @@ import { basename } from "node:path";
 export interface ProcessResult {
   code: number;
   stdout: string;
+  // Present only for callers that need stdout byte fidelity (for example,
+  // forwarding `wux read --log` over SSH). Other process users retain the
+  // established decoded-text contract.
+  stdoutBytes?: Uint8Array;
   stderr: string;
 }
 
-export function runProcess(args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {}): Promise<ProcessResult> {
+export function runProcess(args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; rawStdout?: boolean } = {}): Promise<ProcessResult> {
   return new Promise((resolve) => {
     const [command, ...commandArgs] = args;
     const child = spawn(command, commandArgs, { cwd: options.cwd, env: options.env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
+    const stdoutChunks: Buffer[] = [];
     let stderr = "";
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -23,21 +28,34 @@ export function runProcess(args: string[], options: { cwd?: string; env?: NodeJS
       }
     };
 
-    child.stdout.setEncoding("utf8");
+    if (!options.rawStdout) child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => (stdout += chunk));
+    child.stdout.on("data", (chunk: string | Buffer) => {
+      if (options.rawStdout) stdoutChunks.push(Buffer.from(chunk));
+      else stdout += chunk;
+    });
     child.stderr.on("data", (chunk) => (stderr += chunk));
     child.on("error", (error) => {
       if (settled) return;
       settled = true;
       clearTimer();
-      resolve({ code: 127, stdout, stderr: error.message });
+      resolve({
+        code: 127,
+        stdout,
+        ...(options.rawStdout ? { stdoutBytes: Buffer.concat(stdoutChunks) } : {}),
+        stderr: error.message,
+      });
     });
     child.on("close", (code) => {
       if (settled) return;
       settled = true;
       clearTimer();
-      resolve({ code: code ?? 1, stdout, stderr });
+      resolve({
+        code: code ?? 1,
+        stdout,
+        ...(options.rawStdout ? { stdoutBytes: Buffer.concat(stdoutChunks) } : {}),
+        stderr,
+      });
     });
 
     if (options.timeoutMs !== undefined && options.timeoutMs > 0) {
@@ -52,7 +70,12 @@ export function runProcess(args: string[], options: { cwd?: string; env?: NodeJS
         }
         const marker = `wux: command timed out after ${options.timeoutMs}ms`;
         const timeoutStderr = stderr.length > 0 ? `${stderr}\n${marker}` : `${marker}\n`;
-        resolve({ code: 124, stdout, stderr: timeoutStderr });
+        resolve({
+          code: 124,
+          stdout,
+          ...(options.rawStdout ? { stdoutBytes: Buffer.concat(stdoutChunks) } : {}),
+          stderr: timeoutStderr,
+        });
       }, options.timeoutMs);
     }
   });

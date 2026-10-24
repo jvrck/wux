@@ -18,18 +18,18 @@ export interface BufferedIO {
 
 // An in-memory CliIO that captures everything written, for the MCP layer and tests.
 export function bufferIO(): BufferedIO {
-  let out = "";
-  let err = "";
+  const out: Array<string | Uint8Array> = [];
+  const err: Array<string | Uint8Array> = [];
   return {
     io: {
-      stdout: { write: (chunk: string | Uint8Array) => ((out += toText(chunk)), true) },
-      stderr: { write: (chunk: string | Uint8Array) => ((err += toText(chunk)), true) },
+      stdout: { write: (chunk: string | Uint8Array) => (out.push(chunk), true) },
+      stderr: { write: (chunk: string | Uint8Array) => (err.push(chunk), true) },
     },
-    stdout: () => out,
-    stderr: () => err,
+    stdout: () => toText(out),
+    stderr: () => toText(err),
   };
 }
 
-function toText(chunk: string | Uint8Array): string {
-  return typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+function toText(chunks: Array<string | Uint8Array>): string {
+  return Buffer.concat(chunks.map((chunk) => (typeof chunk === "string" ? Buffer.from(chunk, "utf8") : Buffer.from(chunk)))).toString("utf8");
 }
