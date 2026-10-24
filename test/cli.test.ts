@@ -260,6 +260,14 @@ describe("dispatch", () => {
     expect(await run(["stop", "name", "--bogus"])).toMatchObject({ code: 1, stderr: "wux: unknown option: --bogus\n" });
   });
 
+  test("rejects invalid prune prefixes", async () => {
+    for (const args of [["prune", "--prefix", ""], ["prune", "--prefix", "a/b"], ["prune", "--prefix", "*"], ["prune", "--prefix"], ["prune", "--prefix", "--reconcile"]]) {
+      const result = await run(args);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("--prefix");
+    }
+  });
+
   test("splits backend passthrough at the first -- and leaves wux flags otherwise intact", () => {
     // No --: undefined (byte-identical to the pre-passthrough path); args untouched.
     const noTerminator = ["--name", "x", "--cwd", "P"];

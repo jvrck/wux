@@ -1,6 +1,15 @@
 import { lastInput } from "../runtime/events";
-import { listRuns, type RunMeta, type RunStatus } from "../runtime/runs";
-import { connectionForMeta, hasSession } from "../runtime/tmux";
+import { WuxError } from "../runtime/errors";
+import { listRunMetadata, listRuns, type ListRunOptions, type RunMeta, type RunStatus } from "../runtime/runs";
+import {
+  classifySessionLiveness,
+  connectionForMeta,
+  hasSession,
+  probeSession,
+  type TmuxConnection,
+  type TmuxSessionProbe,
+  type TmuxSessionState,
+} from "../runtime/tmux";
 
 export type DisplayStatus = RunStatus | "unknown";
 
@@ -19,10 +28,15 @@ export interface StatusResult {
   rows: StatusRow[];
 }
 
-export type StatusJsonRun = RunMeta & { command: string[] };
+export type StatusJsonRun = RunMeta & { command: string[]; liveness: TmuxSessionState; derivedStatus: DisplayStatus };
 
 export interface StatusJsonResult {
   runs: StatusJsonRun[];
+}
+
+export interface StatusJsonOptions {
+  probe?: (session: string, connection: TmuxConnection) => Promise<TmuxSessionProbe>;
+  readMeta?: ListRunOptions["readMeta"];
 }
 
 export async function statusRows(): Promise<StatusRow[]> {
@@ -75,7 +89,28 @@ export async function statusCommand(): Promise<StatusResult> {
   return { rows: await statusRows() };
 }
 
-export async function statusJsonCommand(): Promise<StatusJsonResult> {
-  const runs = await listRuns();
-  return { runs: runs.map((run) => ({ ...run, command: run.command ?? [] })) };
+export async function statusJsonCommand(options: StatusJsonOptions = {}): Promise<StatusJsonResult> {
+  const runs = await listRunMetadata({ readMeta: options.readMeta });
+  const enriched = await Promise.all(
+    runs.map(async (run) => {
+      let connection: TmuxConnection;
+      try {
+        connection = connectionForMeta(run);
+      } catch (error) {
+        if (error instanceof WuxError) {
+          return { ...run, command: run.command ?? [], liveness: "unavailable" as const, derivedStatus: "unknown" as const };
+        }
+        throw error;
+      }
+      const probe = await (options.probe ?? probeSession)(run.tmuxSession, connection);
+      const liveness = classifySessionLiveness(probe);
+      return { ...run, command: run.command ?? [], liveness, derivedStatus: deriveJsonStatus(run, liveness) };
+    }),
+  );
+  return { runs: enriched };
+}
+
+function deriveJsonStatus(run: RunMeta, liveness: TmuxSessionState): DisplayStatus {
+  if (liveness === "unavailable") return "unknown";
+  return deriveStatus(run, liveness === "live");
 }

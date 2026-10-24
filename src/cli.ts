@@ -181,7 +181,7 @@ quiescence) bounded by --wait-ms as a timeout, then reads the result.
 immediately. For long turns, pair with \`wux wait\`.
 `,
   prune: `Usage:
-  wux prune [--older-than <duration>] [--days <days>] [--dry-run]
+  wux prune [--older-than <duration>] [--days <days>] [--prefix <prefix>] [--reconcile] [--dry-run]
 
 Removes stopped run state older than the age cutoff. A stopped run is a
 candidate when its latest retention timestamp is strictly older than
@@ -194,8 +194,10 @@ coarse age cutoffs. --days <n> is the day-granularity alias for --older-than
 --older-than 0 (or 0s) is the explicit "select every stopped run regardless of
 age" path for disposable cleanup; it ignores the retention timestamp so even a
 seconds-old stopped run is selected. --dry-run names the candidate run dirs and
-deletes nothing. Live tmux sessions and runs with an active status are never
-candidates.
+deletes nothing. --prefix narrows selection by run-name prefix. --reconcile
+finalizes active runs only when their session is definitively absent; unavailable
+servers are never reconciled. With both flags, output says "would reconcile and
+prune" when one pass would do both.
 `,
   upgrade: `Usage:
   wux upgrade [--check] [--yes]
@@ -573,13 +575,18 @@ async function dispatch(parsed: ParsedGlobal, io: CliIO, deps: CliDeps = {}): Pr
     case "prune": {
       const olderThanMs = parseAgeOption(takeValue(args, "--older-than"), "--older-than");
       const days = parsePositiveIntegerOption(takeIntegerValue(args, "--days"), "--days");
+      const prefix = takeValue(args, "--prefix");
+      if (prefix !== undefined && (!/^[a-zA-Z0-9._-]+$/.test(prefix) || prefix.startsWith("-"))) {
+        throw new WuxError("--prefix must be a run-name prefix");
+      }
+      const reconcile = takeFlag(args, "--reconcile");
       const dryRun = takeFlag(args, "--dry-run");
       rejectUnknownOptions(args);
       if (args.length > 0) throw new WuxError(`unexpected argument: ${args[0]}`);
       if (olderThanMs !== undefined && days !== undefined) {
         throw new WuxError("pass either --older-than or --days, not both");
       }
-      await pruneCommand({ olderThanMs, days, dryRun });
+      await pruneCommand({ olderThanMs, days, dryRun, prefix, reconcile });
       return;
     }
     case "upgrade": {

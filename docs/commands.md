@@ -329,8 +329,10 @@ wux mark smoke blocked
 
 `status` lists known runs with `NAME`, `BACKEND`, `STATUS`, `OWNER`, and `CWD`. Live tmux sessions show `running` unless they were manually marked `waiting` or `blocked`. Missing tmux sessions show `unknown` unless the run was explicitly marked `stopped`.
 
-`status --json` prints an array of persisted run metadata, including `name`,
-`backend`, `tmuxSession`, `status`, `cwd`, `owner`, `createdAt`, and `command`.
+`status --json` prints persisted fields `name`, `backend`, `tmuxSession`, `cwd`,
+`owner`, `createdAt`, `command`, and `status` (the cached value), plus derived
+`liveness` (`live`, `absent`, or `unavailable`) and `derivedStatus`. Cached
+`status` is not proof that a tmux session is live.
 
 `mark` updates run metadata and appends a structured mark event. Active marks (`waiting`, `blocked`, and `running`) require the tmux session to still exist; `stopped` can only be applied to historical run state after the session is gone.
 
@@ -416,9 +418,10 @@ wux prune --days 30 --dry-run
 wux prune --days 30
 wux prune --older-than 7d --dry-run
 wux prune --older-than 0s --dry-run   # name every stopped run; delete nothing
+wux prune --prefix batch- --reconcile --older-than 0 --dry-run
 ```
 
-`prune` scans run state under `$XDG_STATE_HOME/wux/runs` or `~/.local/state/wux/runs`, skips active metadata and live tmux sessions, and removes only stopped run directories older than the cutoff. `--dry-run` reports candidates without deleting them; it names each candidate run directory (the run name is the directory under `runs/`) and never lists a running run. The default retention is 30 days. Prune is explicit only; normal commands never auto-delete logs, and logs are not compressed.
+`prune` scans run state under `$XDG_STATE_HOME/wux/runs` or `~/.local/state/wux/runs`, skips active metadata and live tmux sessions, and removes only stopped run directories older than the cutoff. `--prefix` narrows that scan to run names beginning with the supplied plain-text prefix. `--dry-run` names each candidate directory without deleting it and never lists a running run as a candidate. With `--reconcile`, dry-run prints `would reconcile and prune <name>` when one pass would perform both steps, or `would reconcile <name>` when the age cutoff would keep it. `--reconcile` explicitly finalizes active records only when their tmux session is definitively absent; unavailable servers are never reconciled. The default retention is 30 days. Prune is explicit only; normal commands never auto-delete logs, and logs are not compressed.
 
 ### Age selection
 
@@ -428,7 +431,7 @@ The age cutoff has exact, exclusive semantics: a stopped run is a candidate when
 - `--days <n>` is the day-granularity alias and is exactly equivalent to `--older-than <n>d`. Supply one of `--older-than` / `--days`, not both. `--days` keeps its long-standing positive-integer contract.
 - `--older-than 0` (or `0s`) is the explicit **"select every stopped run regardless of age"** path, intended for cleaning up just-created disposable runs. It ignores the retention timestamp entirely, so a seconds-old (or even timestamp-less) stopped run is selected. Combined with `--dry-run` it names every stopped run and deletes nothing — the safe way for an operator (or agent) to assert exactly which directories a prune would remove. There is no default-aggressive behavior: `0` must be passed explicitly.
 
-Running runs and runs with an active status (`running`, `waiting`, `blocked`) are never candidates at any cutoff, including `--older-than 0`.
+Running runs and runs with an active status (`running`, `waiting`, `blocked`) are never candidates at any cutoff, including `--older-than 0`, unless `--reconcile` proves the session is definitively gone.
 
 ## Upgrade
 

@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pruneRuns, formatPruneResult } from "../src/commands/prune";
 import { runCommand } from "../src/commands/run";
+import { statusJsonCommand } from "../src/commands/status";
 import { __test } from "../src/cli";
 import { hasTmux, killTmux, tempState } from "./helpers";
 
@@ -10,6 +11,7 @@ const { parseAgeOption } = __test;
 
 const NOW = new Date("2026-06-05T00:00:00.000Z");
 const OLD = new Date("2000-01-01T00:00:00.000Z");
+const absentProbe = async () => ({ state: "absent" as const, detail: "can't find session" });
 
 function uniqueRunName(prefix: string): string {
   return `${prefix}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -142,6 +144,310 @@ describe("prune", () => {
       ]);
       await stat(active);
       await stat(broken);
+    } finally {
+      restoreXdgStateHome(previous);
+      await temp.cleanup();
+    }
+  });
+
+  test("invalid socket metadata keeps the missing or invalid metadata skip reason", async () => {
+    const temp = await tempState();
+    await writeRunMeta(temp.stateHome, "invalid-socket-meta", { name: "invalid-socket-meta", status: "running", tmuxSocketPath: "relative" }, OLD);
+    const previous = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    try {
+      const result = await pruneRuns({ olderThanMs: 0, dryRun: true, reconcile: true, now: NOW, probe: absentProbe });
+      expect(result.entries).toEqual([{ name: "invalid-socket-meta", action: "skipped", reason: "missing or invalid metadata" }]);
+    } finally {
+      restoreXdgStateHome(previous);
+      await temp.cleanup();
+    }
+  });
+
+  test("prefix lists only matching runs and summary counts only them", async () => {
+    const temp = await tempState();
+    const selected = await writeRunMeta(temp.stateHome, "batch-dead", { name: "batch-dead", status: "running" }, OLD);
+    const other = await writeRunMeta(temp.stateHome, "other-dead", { name: "other-dead", status: "running" }, OLD);
+    const previous = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    try {
+      const dry = await pruneRuns({ olderThanMs: 0, dryRun: true, reconcile: true, prefix: "batch-", now: NOW, probe: absentProbe });
+      expect(dry.entries).toEqual([{ name: "batch-dead", action: "would-reconcile-prune" }]);
+      expect(dry).toMatchObject({ pruned: 0, wouldPrune: 1, reconciled: 0, wouldReconcile: 1, skipped: 0 });
+      await stat(selected);
+      await stat(other);
+      const result = await pruneRuns({ olderThanMs: 0, dryRun: false, reconcile: true, prefix: "batch-", now: NOW, probe: absentProbe });
+      expect(result.reconciled).toBe(1);
+      await expect(stat(selected)).rejects.toThrow();
+      await stat(other);
+    } finally {
+      restoreXdgStateHome(previous);
+      await temp.cleanup();
+    }
+  });
+
+  test("reconcile dry-run reports would reconcile and leaves metadata unchanged", async () => {
+    const temp = await tempState();
+    const dir = await writeRunMeta(temp.stateHome, "dry-reconcile", { name: "dry-reconcile", status: "running" }, OLD);
+    const before = await readFile(join(dir, "meta.json"), "utf8");
+    const beforeFiles = await readdir(dir);
+    const previous = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    try {
+      const result = await pruneRuns({ olderThanMs: 0, dryRun: true, reconcile: true, now: NOW, probe: absentProbe });
+      expect(formatPruneResult(result)).toContain("would reconcile and prune dry-reconcile");
+      expect(await readFile(join(dir, "meta.json"), "utf8")).toBe(before);
+      expect(await readdir(dir)).toEqual(beforeFiles);
+    } finally { restoreXdgStateHome(previous); await temp.cleanup(); }
+  });
+
+  test("reconcile dry-run summary predicts the same-pass deletions", async () => {
+    const temp = await tempState();
+    const oldDir = await writeRunMeta(temp.stateHome, "dry-old", { name: "dry-old", status: "running" }, OLD);
+    const recentDir = await writeRunMeta(temp.stateHome, "dry-recent", { name: "dry-recent", status: "running" }, NOW);
+    const previous = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    try {
+      const dry = await pruneRuns({ days: 30, dryRun: true, reconcile: true, now: NOW, probe: absentProbe });
+      expect(formatPruneResult(dry)).toBe(
+        "would reconcile and prune dry-old\nwould reconcile dry-recent\nsummary: pruned 0, would-prune 1, reconciled 0, would-reconcile 2, skipped 0\n",
+      );
+      const actual = await pruneRuns({ days: 30, dryRun: false, reconcile: true, now: NOW, probe: absentProbe });
+      expect(actual).toMatchObject({ pruned: 1, reconciled: 2, wouldPrune: 0, wouldReconcile: 0, skipped: 0 });
+      await expect(stat(oldDir)).rejects.toThrow();
+      await stat(recentDir);
+    } finally {
+      restoreXdgStateHome(previous);
+      await temp.cleanup();
+    }
+  });
+
+  test("reconciled recent run is kept and renders reconciled", async () => {
+    const temp = await tempState();
+    const dir = await writeRunMeta(temp.stateHome, "recent-reconcile", { name: "recent-reconcile", status: "running" }, NOW);
+    const previous = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    try {
+      const result = await pruneRuns({ days: 30, dryRun: false, reconcile: true, now: NOW, probe: absentProbe });
+      expect(formatPruneResult(result)).toContain("reconciled recent-reconcile");
+      await stat(dir);
+    } finally { restoreXdgStateHome(previous); await temp.cleanup(); }
+  });
+
+  test("default prune formatting is byte-identical without reconcile", () => {
+    expect(formatPruneResult({ entries: [{ name: "x", action: "would-prune" }], pruned: 0, wouldPrune: 1, skipped: 0 })).toBe(
+      "would prune x\nsummary: pruned 0, would-prune 1, skipped 0\n",
+    );
+  });
+
+  test("prune --dry-run without reconcile is byte-identical to the main golden output", async () => {
+    const temp = await tempState();
+    await writeStoppedRun(temp.stateHome, "main-golden", OLD);
+    const previous = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    try {
+      const result = await pruneRuns({ dryRun: true, now: NOW });
+      expect(formatPruneResult(result)).toBe("would prune main-golden\nsummary: pruned 0, would-prune 1, skipped 0\n");
+    } finally {
+      restoreXdgStateHome(previous);
+      await temp.cleanup();
+    }
+  });
+
+  test("prune without prefix is byte-identical to the main output", async () => {
+    const temp = await tempState();
+    const dir = await writeStoppedRun(temp.stateHome, "no-prefix-golden", OLD);
+    const previous = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    try {
+      const result = await pruneRuns({ dryRun: false, now: NOW });
+      expect(formatPruneResult(result)).toBe("pruned no-prefix-golden\nsummary: pruned 1, would-prune 0, skipped 0\n");
+      await expect(stat(dir)).rejects.toThrow();
+    } finally {
+      restoreXdgStateHome(previous);
+      await temp.cleanup();
+    }
+  });
+
+  test("reconcile older-than 0 records prune reconciliation stop event and prunes in one pass", async () => {
+    const temp = await tempState();
+    const dir = await writeRunMeta(temp.stateHome, "reconcile-once", { name: "reconcile-once", status: "running" }, OLD);
+    const previous = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    try {
+      const removed: string[] = [];
+      const result = await pruneRuns({
+        olderThanMs: 0,
+        dryRun: false,
+        reconcile: true,
+        now: NOW,
+        probe: absentProbe,
+        remove: async (target) => { removed.push(target); },
+      });
+      expect(result).toMatchObject({ pruned: 1, wouldPrune: 0, reconciled: 1, skipped: 0 });
+      expect(result.entries).toEqual([{ name: "reconcile-once", action: "pruned", reconciled: true }]);
+      const events = await readFile(join(dir, "events.jsonl"), "utf8");
+      expect(events).toContain('"type":"stop"');
+      expect(events).toContain('"by":"prune --reconcile"');
+      expect(removed).toEqual([dir]);
+    } finally {
+      restoreXdgStateHome(previous);
+      await temp.cleanup();
+    }
+  });
+
+  test("reconcile skips live and unavailable runs with their existing reasons", async () => {
+    const temp = await tempState();
+    await writeRunMeta(temp.stateHome, "live-run", { name: "live-run", status: "running" }, OLD);
+    await writeRunMeta(temp.stateHome, "unavailable-run", { name: "unavailable-run", status: "running" }, OLD);
+    const previous = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    try {
+      const result = await pruneRuns({
+        olderThanMs: 0,
+        dryRun: false,
+        reconcile: true,
+        now: NOW,
+        probe: async (session) => ({ state: session === "wux_live-run" ? "live" : "unavailable" }),
+      });
+      expect(result.entries).toEqual([
+        { name: "live-run", action: "skipped", reason: "live tmux session" },
+        { name: "unavailable-run", action: "skipped", reason: "tmux server unavailable" },
+      ]);
+    } finally {
+      restoreXdgStateHome(previous);
+      await temp.cleanup();
+    }
+  });
+
+  test("default thirty-day cutoff prunes old reconciled runs and keeps recent dead runs", async () => {
+    const temp = await tempState();
+    const oldDir = await writeRunMeta(temp.stateHome, "old-dead", { name: "old-dead", status: "running" }, OLD);
+    const recentDir = await writeRunMeta(temp.stateHome, "recent-dead", { name: "recent-dead", status: "running" }, NOW);
+    const previous = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    try {
+      const result = await pruneRuns({ days: 30, dryRun: false, reconcile: true, now: NOW, probe: absentProbe });
+      expect(result.entries).toEqual([
+        { name: "old-dead", action: "pruned", reconciled: true },
+        { name: "recent-dead", action: "reconciled", reconciled: true },
+      ]);
+      expect(formatPruneResult(result)).toContain("reconciled recent-dead");
+      await expect(stat(oldDir)).rejects.toThrow();
+      await stat(recentDir);
+    } finally {
+      restoreXdgStateHome(previous);
+      await temp.cleanup();
+    }
+  });
+
+  test("legacy run without a socket skips an indeterminate has-session failure", async () => {
+    const temp = await tempState();
+    await writeRunMeta(temp.stateHome, "legacy-indeterminate", { name: "legacy-indeterminate", status: "running" }, OLD);
+    const previous = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    try {
+      const result = await pruneRuns({
+        olderThanMs: 0,
+        dryRun: false,
+        reconcile: true,
+        now: NOW,
+        probe: async () => ({ state: "absent", detail: "tmux: permission denied" }),
+      });
+      expect(result.entries).toEqual([{ name: "legacy-indeterminate", action: "skipped", reason: "indeterminate tmux state" }]);
+    } finally {
+      restoreXdgStateHome(previous);
+      await temp.cleanup();
+    }
+  });
+
+  test("status and reconcile use the issue liveness table for stored and legacy sockets", async () => {
+    const temp = await tempState();
+    const previous = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const details = [
+      ["can't find session: wux_missing", true],
+      ["no server running on /tmp/wux.sock", true],
+      ["no such file or directory", true],
+      ["connection refused", true],
+      ["permission denied", false],
+    ] as const;
+
+    try {
+      for (const hasSocket of [false, true]) {
+        for (const [index, [detail, definitive]] of details.entries()) {
+          const name = `liveness-${hasSocket ? "socket" : "legacy"}-${index}`;
+          await writeRunMeta(temp.stateHome, name, {
+            name,
+            backend: "shell",
+            tmuxSession: `wux_${name}`,
+            ...(hasSocket ? { tmuxSocketPath: join(temp.root, `${name}.sock`) } : {}),
+            cwd: temp.root,
+            owner: "test-owner",
+            createdAt: NOW.toISOString(),
+            status: "running",
+          }, OLD);
+          const probe = async () => ({ state: hasSocket && !definitive ? "unavailable" as const : "absent" as const, detail });
+          const status = await statusJsonCommand({ probe });
+          expect(status.runs.find((run) => run.name === name)?.liveness).toBe(hasSocket && !definitive ? "unavailable" : "absent");
+          const prune = await pruneRuns({ olderThanMs: 0, dryRun: true, reconcile: true, now: NOW, probe });
+          expect(prune.entries.find((entry) => entry.name === name)).toEqual(
+            definitive
+              ? { name, action: "would-reconcile-prune" }
+              : { name, action: "skipped", reason: hasSocket ? "tmux server unavailable" : "indeterminate tmux state" },
+          );
+        }
+      }
+    } finally {
+      restoreXdgStateHome(previous);
+      await temp.cleanup();
+    }
+  });
+
+  test("nonmatching prefix runs are not probed", async () => {
+    const temp = await tempState();
+    await writeRunMeta(temp.stateHome, "keep-match", { name: "keep-match", status: "running" }, OLD);
+    await writeRunMeta(temp.stateHome, "skip-match", { name: "skip-match", status: "running" }, OLD);
+    const previous = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const probed: string[] = [];
+    try {
+      await pruneRuns({
+        olderThanMs: 0,
+        dryRun: true,
+        reconcile: true,
+        prefix: "keep-",
+        now: NOW,
+        probe: async (session) => {
+          probed.push(session);
+          return { state: "absent", detail: "can't find session" };
+        },
+      });
+      expect(probed).toEqual(["wux_keep-match"]);
+    } finally {
+      restoreXdgStateHome(previous);
+      await temp.cleanup();
+    }
+  });
+
+  test("prefix combines with days older-than dry-run and the age cutoff", async () => {
+    const temp = await tempState();
+    await writeStoppedRun(temp.stateHome, "batch-old", OLD);
+    await writeStoppedRun(temp.stateHome, "batch-recent", NOW);
+    await writeStoppedRun(temp.stateHome, "other-old", OLD);
+    const previous = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    try {
+      const byDays = await pruneRuns({ days: 30, dryRun: true, prefix: "batch-", now: NOW });
+      expect(byDays.entries).toEqual([
+        { name: "batch-old", action: "would-prune" },
+        { name: "batch-recent", action: "skipped", reason: "newer than cutoff" },
+      ]);
+      const byAge = await pruneRuns({ olderThanMs: 0, dryRun: true, prefix: "batch-", now: NOW });
+      expect(byAge.entries).toEqual([
+        { name: "batch-old", action: "would-prune" },
+        { name: "batch-recent", action: "would-prune" },
+      ]);
     } finally {
       restoreXdgStateHome(previous);
       await temp.cleanup();

@@ -1,9 +1,16 @@
 import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { WuxError } from "../runtime/errors";
-import type { RunMeta, RunStatus } from "../runtime/runs";
+import { finalizeStopped, type RunMeta, type RunStatus } from "../runtime/runs";
 import { runsRoot } from "../runtime/state";
-import { connectionForMeta, probeSession, tmuxSessionName } from "../runtime/tmux";
+import {
+  connectionForMeta,
+  isDefinitivelyAbsentTmuxDetail,
+  probeSession,
+  tmuxSessionName,
+  type TmuxConnection,
+  type TmuxSessionProbe,
+} from "../runtime/tmux";
 
 export interface PruneOptions {
   days?: number;
@@ -14,13 +21,22 @@ export interface PruneOptions {
   // selected. Takes precedence over `days`; the CLI rejects supplying both.
   olderThanMs?: number;
   dryRun: boolean;
+  reconcile?: boolean;
+  prefix?: string;
   now?: Date;
+  // Test seam: production uses the authoritative tmux probe. Keeping this on
+  // the options also lets the prefix filter be verified before any probe runs.
+  probe?: (session: string, connection: TmuxConnection) => Promise<TmuxSessionProbe>;
+  // Test seam for observing reconciliation's stop event before pruning removes
+  // the run directory.
+  remove?: (dir: string) => Promise<void>;
 }
 
 export interface PruneEntry {
   name: string;
-  action: "pruned" | "would-prune" | "skipped";
+  action: "pruned" | "would-prune" | "reconciled" | "would-reconcile" | "would-reconcile-prune" | "skipped";
   reason?: string;
+  reconciled?: boolean;
 }
 
 export interface PruneResult {
@@ -28,6 +44,8 @@ export interface PruneResult {
   pruned: number;
   wouldPrune: number;
   skipped: number;
+  reconciled?: number;
+  wouldReconcile?: number;
 }
 
 const DEFAULT_PRUNE_DAYS = 30;
@@ -51,12 +69,35 @@ export async function pruneRuns(options: PruneOptions): Promise<PruneResult> {
   // than this cutoff ("stopped more than <age> ago").
   const selectAll = ageMs === 0;
   const cutoffMs = (options.now ?? new Date()).getTime() - ageMs;
-  const result = emptyResult();
+  const result = emptyResult(options.reconcile === true);
+  const remove = options.remove ?? ((target: string) => rm(target, { recursive: true, force: true }));
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     if (!entry.isDirectory()) continue;
     const name = entry.name;
+    if (options.prefix !== undefined && !name.startsWith(options.prefix)) continue;
     const dir = join(root, name);
-    const decision = await decideRun(name, dir, cutoffMs, selectAll);
+    const decision = await decideRun(
+      name,
+      dir,
+      cutoffMs,
+      selectAll,
+      options.reconcile === true,
+      options.dryRun,
+      options.probe ?? probeSession,
+      remove,
+    );
+    if (decision.action === "would-reconcile" || decision.action === "would-reconcile-prune") {
+      result.entries.push(decision);
+      result.wouldReconcile = (result.wouldReconcile ?? 0) + 1;
+      if (decision.action === "would-reconcile-prune") result.wouldPrune += 1;
+      continue;
+    }
+    if (decision.reconciled) {
+      result.reconciled = (result.reconciled ?? 0) + 1;
+      result.entries.push(decision);
+      if (decision.action === "pruned") result.pruned += 1;
+      continue;
+    }
     if (decision.action === "skipped") {
       result.entries.push(decision);
       result.skipped += 1;
@@ -69,7 +110,7 @@ export async function pruneRuns(options: PruneOptions): Promise<PruneResult> {
       continue;
     }
 
-    await rm(dir, { recursive: true, force: true });
+    await remove(dir);
     result.entries.push({ name, action: "pruned" });
     result.pruned += 1;
   }
@@ -84,10 +125,13 @@ export async function pruneCommand(options: PruneOptions): Promise<void> {
 export function formatPruneResult(result: PruneResult): string {
   const lines = result.entries.map((entry) => {
     if (entry.action === "skipped") return `skip ${entry.name}: ${entry.reason}`;
+    if (entry.action === "would-reconcile-prune") return `would reconcile and prune ${entry.name}`;
+    if (entry.action === "would-reconcile") return `would reconcile ${entry.name}`;
+    if (entry.action === "reconciled") return `reconciled ${entry.name}`;
     if (entry.action === "would-prune") return `would prune ${entry.name}`;
     return `pruned ${entry.name}`;
   });
-  lines.push(`summary: pruned ${result.pruned}, would-prune ${result.wouldPrune}, skipped ${result.skipped}`);
+  lines.push(`summary: pruned ${result.pruned}, would-prune ${result.wouldPrune}${result.reconciled === undefined ? "" : `, reconciled ${result.reconciled}, would-reconcile ${result.wouldReconcile ?? 0}`}, skipped ${result.skipped}`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -113,7 +157,16 @@ function resolveAgeMs(options: PruneOptions): number {
   return days * MS_PER_DAY;
 }
 
-async function decideRun(name: string, dir: string, cutoffMs: number, selectAll: boolean): Promise<PruneEntry> {
+async function decideRun(
+  name: string,
+  dir: string,
+  cutoffMs: number,
+  selectAll: boolean,
+  reconcile: boolean,
+  dryRun: boolean,
+  probe: (session: string, connection: TmuxConnection) => Promise<TmuxSessionProbe>,
+  remove: (dir: string) => Promise<void>,
+): Promise<PruneEntry> {
   const meta = await loadMeta(dir);
   if (!meta) return { name, action: "skipped", reason: "missing or invalid metadata" };
 
@@ -124,14 +177,24 @@ async function decideRun(name: string, dir: string, cutoffMs: number, selectAll:
     if (error instanceof WuxError) return { name, action: "skipped", reason: "missing or invalid metadata" };
     throw error;
   }
-  const probe = await probeSession(meta.tmuxSession ?? tmuxSessionName(name), connection);
-  if (probe.state === "live") {
+  const sessionProbe = await probe(meta.tmuxSession ?? tmuxSessionName(name), connection);
+  if (sessionProbe.state === "live") {
     return { name, action: "skipped", reason: "live tmux session" };
   }
-  if (probe.state === "unavailable") {
+  if (sessionProbe.state === "unavailable") {
     return { name, action: "skipped", reason: "tmux server unavailable" };
   }
 
+  if ((!meta.status || ACTIVE_STATUSES.has(meta.status)) && reconcile) {
+    if (!Object.hasOwn(meta, "tmuxSocketPath") && !isDefinitivelyAbsentTmuxDetail(sessionProbe.detail ?? "")) {
+      return { name, action: "skipped", reason: "indeterminate tmux state" };
+    }
+    const timestampMs = await latestTimestampMs(dir, meta);
+    const shouldPrune = isPrunable(timestampMs, cutoffMs, selectAll);
+    if (dryRun) return { name, action: shouldPrune ? "would-reconcile-prune" : "would-reconcile" };
+    const stopped = await finalizeStopped(meta, "prune --reconcile");
+    return await pruneReconciled(name, dir, stopped, timestampMs, cutoffMs, selectAll, remove);
+  }
   if (!meta.status || ACTIVE_STATUSES.has(meta.status)) {
     return { name, action: "skipped", reason: `active status ${meta.status ?? "unknown"}` };
   }
@@ -141,12 +204,25 @@ async function decideRun(name: string, dir: string, cutoffMs: number, selectAll:
   }
 
   // Age 0 selects every stopped run regardless of (or even absent) a timestamp.
-  if (selectAll) return { name, action: "pruned" };
-
   const timestampMs = await latestTimestampMs(dir, meta);
+  if (selectAll) return { name, action: "pruned" };
   if (timestampMs === undefined) return { name, action: "skipped", reason: "no retention timestamp" };
-  if (timestampMs >= cutoffMs) return { name, action: "skipped", reason: "newer than cutoff" };
+  if (!isPrunable(timestampMs, cutoffMs, selectAll)) return { name, action: "skipped", reason: "newer than cutoff" };
   return { name, action: "pruned" };
+}
+
+async function pruneReconciled(
+  name: string,
+  dir: string,
+  meta: RunMeta,
+  timestampMs: number | undefined,
+  cutoffMs: number,
+  selectAll: boolean,
+  remove: (dir: string) => Promise<void>,
+): Promise<PruneEntry> {
+  if (!isPrunable(timestampMs, cutoffMs, selectAll)) return { name, action: "reconciled", reconciled: true };
+  await remove(dir);
+  return { name, action: "pruned", reconciled: true };
 }
 
 async function loadMeta(dir: string): Promise<RunMeta | undefined> {
@@ -174,6 +250,10 @@ async function latestTimestampMs(dir: string, meta: RunMeta): Promise<number | u
   return Math.max(...timestamps);
 }
 
-function emptyResult(): PruneResult {
-  return { entries: [], pruned: 0, wouldPrune: 0, skipped: 0 };
+function emptyResult(withReconciled = false): PruneResult {
+  return { entries: [], pruned: 0, wouldPrune: 0, skipped: 0, ...(withReconciled ? { reconciled: 0, wouldReconcile: 0 } : {}) };
+}
+
+function isPrunable(timestampMs: number | undefined, cutoffMs: number, selectAll: boolean): boolean {
+  return selectAll || (timestampMs !== undefined && timestampMs < cutoffMs);
 }
