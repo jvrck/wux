@@ -149,6 +149,7 @@ pane) — the cost of not stranding. It never grows with how long a pane stays b
 ```bash
 wux read smoke --tail 50
 wux read smoke --tail 50 --json
+wux read --log smoke --tail 50 > smoke.log
 wux read --follow smoke | tee smoke.log
 ```
 
@@ -166,6 +167,11 @@ pane scrape, not structured turn output.
 Follow mode is intentionally raw: use shell pipes for filtering, saving, and
 notification. It cannot be combined with `--json` or `--tail`; the
 `--poll-interval-ms <ms>` option only controls the local file-tail cadence.
+
+`read --log` writes the persisted `pane.log` byte stream from the beginning, or
+the last `--tail` lines without loading the full log. It preserves ANSI and TUI
+bytes, works after the tmux session has stopped, and is not structured output.
+It cannot be combined with `--follow`, `--json`, or `--poll-interval-ms`.
 
 ## Wait
 

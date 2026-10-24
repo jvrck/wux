@@ -371,6 +371,16 @@ describe("remotes command", () => {
       });
       expect(code).toBe(0);
       expect(calls).toEqual([["ssh", ...SSH_OPTS, "--", "worker", "'env' 'WUX_FORCE_LOCAL=1' '/opt/wux' 'read' 'r' '--tail' '5'"]]);
+
+      calls.length = 0;
+      code = await runCli(["--remote", "work", "read", "--log", "r", "--tail", "5"], memory.io, {
+        sshRunner: async (args) => {
+          calls.push(args);
+          return { code: 0, stdout: "", stderr: "" };
+        },
+      });
+      expect(code).toBe(0);
+      expect(calls).toEqual([["ssh", ...SSH_OPTS, "--", "worker", "'env' 'WUX_FORCE_LOCAL=1' '/opt/wux' 'read' '--log' 'r' '--tail' '5'"]]);
     });
   });
 

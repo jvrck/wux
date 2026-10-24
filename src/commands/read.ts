@@ -13,6 +13,14 @@ export interface ReadOptions {
   intervalMs?: number;
 }
 
+type ByteWriter = { write(chunk: Uint8Array): unknown };
+
+export interface ReadLogOptions {
+  name: string;
+  tail?: number;
+  writer: ByteWriter;
+}
+
 type Writer = { write(chunk: string): unknown };
 
 interface FollowRunMeta {
@@ -57,6 +65,27 @@ export async function readRun(options: ReadOptions): Promise<string> {
 
   const meta = await requireLiveRun(options.name);
   return capturePane(meta.tmuxSession, tail, connectionForMeta(meta));
+}
+
+// Streams the persisted pane log rather than asking tmux for a pane scrape. This
+// deliberately preserves ANSI/TUI bytes and remains available after a run stops.
+export async function readLog(options: ReadLogOptions): Promise<void> {
+  if (!options.name) throw new WuxError("read requires <run-name>");
+  if (options.tail !== undefined && (!Number.isSafeInteger(options.tail) || options.tail <= 0)) {
+    throw new WuxError("--tail must be a positive integer");
+  }
+
+  const meta = await loadRunMeta(options.name);
+  const path = join(runDir(meta.name), "pane.log");
+  try {
+    const start = options.tail === undefined ? 0 : await tailStart(path, options.tail);
+    await emitLogBytes(path, start, options.writer);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new WuxError(`no pane log for ${meta.name}`);
+    }
+    throw error;
+  }
 }
 
 // Structured read result for the MCP layer. The CLI text path uses `readRun`
@@ -129,6 +158,56 @@ async function emitAppendedBytes(path: string, offset: number, decoder: StringDe
       cursor += bytesRead;
     }
     return cursor;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function emitLogBytes(path: string, offset: number, writer: ByteWriter): Promise<void> {
+  const handle = await open(path, "r");
+  try {
+    const size = (await handle.stat()).size;
+    const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, Math.max(size - offset, 1)));
+    let cursor = offset;
+    while (cursor < size) {
+      const length = Math.min(buffer.length, size - cursor);
+      const { bytesRead } = await handle.read(buffer, 0, length, cursor);
+      if (bytesRead === 0) break;
+      writer.write(buffer.subarray(0, bytesRead));
+      cursor += bytesRead;
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
+// Finds the byte offset for tail-like output without loading the full log. A
+// trailing newline terminates an empty final record, so it needs one additional
+// separator to retain the requested number of completed lines.
+async function tailStart(path: string, lines: number): Promise<number> {
+  const handle = await open(path, "r");
+  try {
+    const size = (await handle.stat()).size;
+    if (size === 0) return 0;
+
+    const finalByte = Buffer.allocUnsafe(1);
+    await handle.read(finalByte, 0, 1, size - 1);
+    const separatorsNeeded = lines + (finalByte[0] === 0x0a ? 1 : 0);
+    const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, size));
+    let cursor = size;
+    let separators = 0;
+
+    while (cursor > 0) {
+      const start = Math.max(0, cursor - buffer.length);
+      const { bytesRead } = await handle.read(buffer, 0, cursor - start, start);
+      for (let index = bytesRead - 1; index >= 0; index -= 1) {
+        if (buffer[index] !== 0x0a) continue;
+        separators += 1;
+        if (separators >= separatorsNeeded) return start + index + 1;
+      }
+      cursor = start;
+    }
+    return 0;
   } finally {
     await handle.close();
   }

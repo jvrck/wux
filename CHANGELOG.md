@@ -10,6 +10,11 @@ intentionally not reproduced here.
 
 ## Unreleased
 
+### Added
+
+- Added `wux read --log` to stream persisted raw pane logs, including after a
+  run stops.
+
 ### Security
 
 - Updated transitive body-parser to 2.4.0 for CVE-2026-111181, Zod to 4.6.7

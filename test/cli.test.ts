@@ -373,6 +373,21 @@ describe("dispatch", () => {
     expect(calls[0][calls[0].length - 1]).toContain("'read' '--follow' 'run-name' '--poll-interval-ms' '100'");
   });
 
+  test("read --log is operational and forwards over --host with its arguments", async () => {
+    const memory = memoryIO();
+    const calls: string[][] = [];
+    const code = await runCli(["--host", "worker", "read", "--log", "run-name", "--tail", "5"], memory.io, {
+      sshRunner: async (args) => {
+        calls.push(args);
+        return { code: 0, stdout: "", stderr: "" };
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0][calls[0].length - 1]).toContain("'read' '--log' 'run-name' '--tail' '5'");
+  });
+
   test("long-running forwarding is not capped by the generic SSH command timeout", () => {
     expect(__test.forwardTimeoutForCommand("attach")).toBe(0);
     expect(__test.forwardTimeoutForCommand("wait")).toBe(0);
