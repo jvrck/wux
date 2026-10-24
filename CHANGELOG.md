@@ -12,8 +12,8 @@ intentionally not reproduced here.
 
 ### Security
 
-- Updated transitive body-parser to 2.4.0 for CVE-2026-111181 and Zod to 4.6.7
-  for CVE-2023-54404.
+- Updated transitive body-parser to 2.4.0 for CVE-2026-111181, Zod to 4.6.7
+  for CVE-2023-54404, and its required qs from 6.16.0 to 6.16.1.
 
 ### Fixed
 
