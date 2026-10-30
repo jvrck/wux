@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { runProcess, type ProcessResult } from "../src/runtime/process";
@@ -81,19 +81,19 @@ export async function killPrivateTmuxServer(socketPath: string, allowedRoot: str
     realpath(allowedRoot),
     process.env.WUX_TEST_TMUX_ROOT ? realpath(process.env.WUX_TEST_TMUX_ROOT) : undefined,
   ]);
-  let resolvedSocket: string;
-  try {
-    resolvedSocket = await realpath(socketPath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    const absentSocket = await realpathWithMissingTail(socketPath);
-    if (!allowedSocketPath(absentSocket, resolvedAllowedRoot, testRoot)) {
-      throw new Error(`refusing to kill tmux server outside test-owned roots: ${socketPath}`);
-    }
-    return { code: 0, stdout: "", stderr: "" };
-  }
+  const resolvedSocket = join(await realpathWithMissingTail(dirname(socketPath)), basename(socketPath));
   if (!allowedSocketPath(resolvedSocket, resolvedAllowedRoot, testRoot)) {
     throw new Error(`refusing to kill tmux server outside test-owned roots: ${resolvedSocket}`);
+  }
+  try {
+    if ((await lstat(socketPath)).isSymbolicLink()) {
+      throw new Error(`refusing to kill tmux server through symlinked socket: ${socketPath}`);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { code: 0, stdout: "", stderr: "" };
+    }
+    throw error;
   }
   const result = await runner(["tmux", "-S", resolvedSocket, "kill-server"]);
   if (result.code !== 0) {

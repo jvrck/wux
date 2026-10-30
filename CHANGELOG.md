@@ -10,6 +10,10 @@ intentionally not reproduced here.
 
 ## Unreleased
 
+### Fixed
+
+- Fixed macOS test cleanup to resolve tmux socket parents without resolving Unix sockets directly.
+
 ## 2026.10.24
 
 No breaking changes.
