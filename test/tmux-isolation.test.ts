@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupPrivateTmuxServers, killPrivateTmuxServer } from "./helpers";
@@ -78,6 +79,34 @@ test("private tmux cleanup preserves a live socket after a failed kill", async (
     expect((await stat(socketParent)).isDirectory()).toBe(true);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("private tmux cleanup resolves a real socket parent and refuses a symlinked socket", async () => {
+  const root = await mkdtemp(join(tmpdir(), "wux-test-socket-"));
+  const outsideRoot = await mkdtemp(join(tmpdir(), "wux-test-outside-"));
+  const socketParent = join(root, "tmux");
+  const socketPath = join(socketParent, "default");
+  const symlinkedSocket = join(socketParent, "linked");
+  const outsideSocket = join(outsideRoot, "socket");
+  const server = createServer();
+  const calls: string[][] = [];
+  try {
+    await mkdir(socketParent);
+    await new Promise<void>((resolve, reject) => server.listen(socketPath, (error?: Error) => (error ? reject(error) : resolve())));
+    await writeFile(outsideSocket, "outside");
+    await symlink(outsideSocket, symlinkedSocket);
+    const runner = async (args: string[]) => {
+      calls.push(args);
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    expect(await killPrivateTmuxServer(socketPath, root, runner)).toMatchObject({ code: 0 });
+    expect(calls).toEqual([["tmux", "-S", join(await realpath(socketParent), "default"), "kill-server"]]);
+    await expect(killPrivateTmuxServer(symlinkedSocket, root, runner)).rejects.toThrow("refusing to kill tmux server through symlinked socket");
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    await rm(root, { recursive: true, force: true });
+    await rm(outsideRoot, { recursive: true, force: true });
   }
 });
 
