@@ -62,7 +62,9 @@ describe("help", () => {
       if (command === "remotes" || command === "skills") continue;
       const usage = commandHelp(command);
       if (!usage) throw new Error(`missing help for ${command}`);
-      const usageBlock = usage.slice(0, usage.indexOf("\n\n"));
+      const usageEnd = usage.indexOf("\n\n");
+      if (usageEnd === -1) throw new Error(`missing usage delimiter for ${command}`);
+      const usageBlock = usage.slice(0, usageEnd);
       const documented = [...new Set(usageBlock.match(/--[a-z-]+/g) ?? [])];
       const accepted = options.map((option) => option.split(" ", 1)[0]);
       expect(documented).toEqual(accepted);

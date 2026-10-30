@@ -18,6 +18,7 @@ bytes verbatim to stdout and has no filesystem side effects.
 `;
 
 const SKILLS_COMMANDS = ["list", "show"] as const;
+const HELP_OPTIONS = ["--help", "-h"] as const;
 
 export async function skillsCommand(args: string[], io: SkillsIO): Promise<void> {
   const command = args.shift();
@@ -34,7 +35,7 @@ export async function skillsCommand(args: string[], io: SkillsIO): Promise<void>
       showSkill(args, io);
       return;
     default:
-      if (command.startsWith("-")) throw new WuxError(unknownChoice("option", command, [], "wux skills"));
+      if (command.startsWith("-")) throw new WuxError(unknownChoice("option", command, HELP_OPTIONS, "wux skills"));
       throw new WuxError(unknownChoice("skills command", command, SKILLS_COMMANDS, "wux skills"));
   }
 }
@@ -51,7 +52,7 @@ function listSkills(args: string[], io: SkillsIO): void {
 function showSkill(args: string[], io: SkillsIO): void {
   const name = args.shift();
   if (!name || name.startsWith("-")) throw new WuxError("skills show requires <name>");
-  rejectUnknownOptions(args, []);
+  rejectUnknownOptions(args, HELP_OPTIONS);
   rejectUnexpectedArgs(args);
 
   const skill = findSkill(name);

@@ -76,6 +76,11 @@ describe("remotes config", () => {
 
 describe("remotes command", () => {
   test("lists valid remotes subcommands and options for unknown input", async () => {
+    expect(await run(["remotes", "--x"])).toMatchObject({
+      code: 1,
+      stdout: "",
+      stderr: "wux: unknown option: --x (options: --help, -h; see 'wux remotes --help'); did you mean '-h'?\n",
+    });
     expect(await run(["remotes", "lits"])).toMatchObject({
       code: 1,
       stdout: "",
@@ -85,6 +90,11 @@ describe("remotes command", () => {
       code: 1,
       stdout: "",
       stderr: "wux: unknown option: --lines (options: --json; see 'wux remotes --help')\n",
+    });
+    expect(await run(["remotes", "remove", "n", "--x"])).toMatchObject({
+      code: 1,
+      stdout: "",
+      stderr: "wux: unknown option: --x (options: --help, -h; see 'wux remotes --help'); did you mean '-h'?\n",
     });
   });
 
