@@ -42,6 +42,10 @@ read-only `remotes` inspectors also have JSON output documented below. A local
 stderr. `code` is a stable machine token such as `bad-args`, `run-not-found`, or
 `tmux-session-not-running`.
 
+Unknown commands and options list the valid choices for their scope and may
+suggest one close spelling. Suggestions never act as aliases: the invocation
+still fails without running a command.
+
 Frozen envelopes for the core run-inspection path:
 
 ```ts

@@ -13,6 +13,7 @@ intentionally not reproduced here.
 ### Fixed
 
 - Fixed macOS test cleanup to resolve tmux socket parents without resolving Unix sockets directly.
+- Unknown commands and options now list valid choices and suggest a close spelling without accepting aliases.
 
 ## 2026.10.24
 

@@ -75,6 +75,19 @@ describe("remotes config", () => {
 });
 
 describe("remotes command", () => {
+  test("lists valid remotes subcommands and options for unknown input", async () => {
+    expect(await run(["remotes", "lits"])).toMatchObject({
+      code: 1,
+      stdout: "",
+      stderr: "wux: unknown remotes command: lits (remotes commands: list, add, show, remove, default, clear-default, doctor; see 'wux remotes --help'); did you mean 'list'?\n",
+    });
+    expect(await run(["remotes", "list", "--lines"])).toMatchObject({
+      code: 1,
+      stdout: "",
+      stderr: "wux: unknown option: --lines (options: --json; see 'wux remotes --help')\n",
+    });
+  });
+
   test("adds, lists, shows, defaults, clears, and removes remotes", async () => {
     await withConfig(async () => {
       expect(await run(["remotes", "list"])).toMatchObject({ code: 0, stdout: "no remotes configured\n" });

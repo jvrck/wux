@@ -17,6 +17,7 @@ import { upgradeCommand } from "./commands/upgrade";
 import { formatWaitResult, waitCommand, waitExitCode } from "./commands/wait";
 import { runNotifyCli } from "./bin/wux-notify";
 import { loadConfig, remoteWuxHintFromEnv, remoteWuxPath, requireRemote } from "./runtime/config";
+import { unknownChoice } from "./runtime/choices";
 import { WuxError } from "./runtime/errors";
 import type { CliIO } from "./runtime/io";
 import { forwardSshCommand, stripTargetArgs, type SshRunner } from "./transport/ssh";
@@ -33,6 +34,27 @@ const MARK_STATUSES = new Set<MarkStatus>(["waiting", "blocked", "running", "sto
 
 type CommandName = (typeof COMMANDS)[number];
 type OperationalCommandName = (typeof OPERATIONAL_COMMANDS)[number];
+
+const GLOBAL_OPTIONS = ["--local", "--remote <name>", "--host <host>", "--host-wux <path>", "--help", "-h", "--version", "-v"] as const;
+const COMMAND_OPTIONS: Record<CommandName, readonly string[]> = {
+  run: ["--name <run-name>", "--cwd <path>", "--owner <owner>", "--json"],
+  send: ["--force-owner", "--json"],
+  read: ["--tail <lines>", "--json", "--follow", "--poll-interval-ms <ms>"],
+  status: ["--json"],
+  wait: ["--idle <duration>", "--timeout <duration>", "--poll-interval-ms <ms>", "--json", "--result"],
+  result: ["--json"],
+  mark: [],
+  attach: [],
+  stop: ["--yes"],
+  interrupt: ["--force-owner"],
+  handoff: ["--prompt-file <path>", "--wait-ms <ms>", "--tail <lines>"],
+  prune: ["--older-than <duration>", "--days <days>", "--prefix <prefix>", "--reconcile", "--dry-run"],
+  upgrade: ["--check", "--yes"],
+  remotes: [],
+  mcp: ["--allow-raw-host"],
+  skills: [],
+  notify: [],
+};
 
 export interface CliDeps {
   sshRunner?: SshRunner;
@@ -420,8 +442,8 @@ async function dispatch(parsed: ParsedGlobal, io: CliIO, deps: CliDeps = {}): Pr
   }
 
   if (!isCommand(command)) {
-    if (command.startsWith("-")) throw new WuxError(`unknown option: ${command}`);
-    throw new WuxError(`unknown command: ${command}`);
+    if (command.startsWith("-")) throw new WuxError(unknownChoice("option", command, GLOBAL_OPTIONS, "wux"));
+    throw new WuxError(unknownChoice("command", command, COMMANDS, "wux"));
   }
 
   if (hasHelpRequest(args)) {
@@ -440,7 +462,7 @@ async function dispatch(parsed: ParsedGlobal, io: CliIO, deps: CliDeps = {}): Pr
       const cwd = takeValue(args, "--cwd");
       const owner = takeValue(args, "--owner");
       const json = takeFlag(args, "--json");
-      rejectUnknownOptions(args);
+      rejectUnknownOptions(args, "run");
       if (args.length > 0) throw new WuxError(`unexpected argument: ${args[0]}`);
       if (!name) throw new WuxError("run requires --name <run-name>");
       if (!cwd) throw new WuxError("run requires --cwd <path>");
@@ -486,7 +508,7 @@ async function dispatch(parsed: ParsedGlobal, io: CliIO, deps: CliDeps = {}): Pr
     }
     case "status": {
       const json = takeFlag(args, "--json");
-      rejectUnknownOptions(args);
+      rejectUnknownOptions(args, "status");
       if (args.length > 0) throw new WuxError(`unexpected argument: ${args[0]}`);
       if (json) {
         const result = await statusJsonCommand();
@@ -504,7 +526,7 @@ async function dispatch(parsed: ParsedGlobal, io: CliIO, deps: CliDeps = {}): Pr
       const json = takeFlag(args, "--json");
       const inlineResult = takeFlag(args, "--result");
       const name = takeRunName(args, "wait");
-      rejectUnknownOptions(args);
+      rejectUnknownOptions(args, "wait");
       if (args.length > 0) throw new WuxError(`unexpected argument: ${args[0]}`);
       if (inlineResult && !json) throw new WuxError("--result requires --json");
       const result = await waitCommand({ name, idleMs, timeoutMs, pollIntervalMs });
@@ -519,7 +541,7 @@ async function dispatch(parsed: ParsedGlobal, io: CliIO, deps: CliDeps = {}): Pr
     case "result": {
       const json = takeFlag(args, "--json");
       const name = takeRunName(args, "result");
-      rejectUnknownOptions(args);
+      rejectUnknownOptions(args, "result");
       if (args.length > 0) throw new WuxError(`unexpected argument: ${args[0]}`);
       const envelope = await resultCommand({ name });
       if (json) {
@@ -532,7 +554,7 @@ async function dispatch(parsed: ParsedGlobal, io: CliIO, deps: CliDeps = {}): Pr
     case "mark": {
       const name = takeRunName(args, "mark");
       const status = args.shift();
-      rejectUnknownOptions(args);
+      rejectUnknownOptions(args, "mark");
       if (args.length > 0) throw new WuxError(`unexpected argument: ${args[0]}`);
       if (!status || status.startsWith("-")) throw new WuxError("mark requires <status>");
       if (!isMarkStatus(status)) throw new WuxError(`invalid status: ${status}`);
@@ -547,7 +569,7 @@ async function dispatch(parsed: ParsedGlobal, io: CliIO, deps: CliDeps = {}): Pr
     case "stop": {
       const yes = takeFlag(args, "--yes");
       const name = takeRunName(args, "stop");
-      rejectUnknownOptions(args);
+      rejectUnknownOptions(args, "stop");
       if (args.length > 0) throw new WuxError(`unexpected argument: ${args[0]}`);
       const result = await stopCommand(name, yes);
       io.stdout.write(`stopped ${result.name}\n`);
@@ -556,7 +578,7 @@ async function dispatch(parsed: ParsedGlobal, io: CliIO, deps: CliDeps = {}): Pr
     case "interrupt": {
       const forceOwner = takeFlag(args, "--force-owner");
       const name = takeRunName(args, "interrupt");
-      rejectUnknownOptions(args);
+      rejectUnknownOptions(args, "interrupt");
       if (args.length > 0) throw new WuxError(`unexpected argument: ${args[0]}`);
       const result = await interruptCommand({ name, forceOwner });
       io.stdout.write(`interrupted ${result.name}\n`);
@@ -567,7 +589,7 @@ async function dispatch(parsed: ParsedGlobal, io: CliIO, deps: CliDeps = {}): Pr
       const waitMs = parseIntegerOption(takeValue(args, "--wait-ms"), "--wait-ms");
       const tail = parseIntegerOption(takeValue(args, "--tail"), "--tail");
       const name = takeRunName(args, "handoff");
-      rejectUnknownOptions(args);
+      rejectUnknownOptions(args, "handoff");
       if (args.length > 0) throw new WuxError(`unexpected argument: ${args[0]}`);
       await handoffCommand({ name, promptFile, waitMs, tail });
       return;
@@ -581,7 +603,7 @@ async function dispatch(parsed: ParsedGlobal, io: CliIO, deps: CliDeps = {}): Pr
       }
       const reconcile = takeFlag(args, "--reconcile");
       const dryRun = takeFlag(args, "--dry-run");
-      rejectUnknownOptions(args);
+      rejectUnknownOptions(args, "prune");
       if (args.length > 0) throw new WuxError(`unexpected argument: ${args[0]}`);
       if (olderThanMs !== undefined && days !== undefined) {
         throw new WuxError("pass either --older-than or --days, not both");
@@ -592,7 +614,7 @@ async function dispatch(parsed: ParsedGlobal, io: CliIO, deps: CliDeps = {}): Pr
     case "upgrade": {
       const check = takeFlag(args, "--check");
       const yes = takeFlag(args, "--yes");
-      rejectUnknownOptions(args);
+      rejectUnknownOptions(args, "upgrade");
       if (args.length > 0) throw new WuxError(`unexpected argument: ${args[0]}`);
       await upgradeCommand({ check, yes });
       return;
@@ -603,7 +625,7 @@ async function dispatch(parsed: ParsedGlobal, io: CliIO, deps: CliDeps = {}): Pr
     }
     case "mcp": {
       const allowRawHost = takeFlag(args, "--allow-raw-host");
-      rejectUnknownOptions(args);
+      rejectUnknownOptions(args, "mcp");
       if (args.length > 0) throw new WuxError(`unexpected argument: ${args[0]}`);
       await mcpCommand({ allowRawHost, transport: deps.mcpTransport, sshRunner: deps.sshRunner });
       return;
@@ -651,7 +673,12 @@ function parseSendArgs(args: string[]): { name: string; text?: string; forceOwne
   const hasTerminator = args[0] === "--";
   if (hasTerminator) args.shift();
   const text = args.shift();
-  if (text?.startsWith("-") && !hasTerminator) throw new WuxError(`unknown option: ${text}`);
+  if (text?.startsWith("-") && !hasTerminator) {
+    if (COMMAND_OPTIONS.send.some((option) => option.split(" ", 1)[0] === text)) {
+      throw new WuxError(`unknown option: ${text}`);
+    }
+    throw new WuxError(unknownOption(text, "send"));
+  }
   // A trailing --force-owner after the literal text stays supported (original
   // behavior); --json must precede the text, so a trailing --json is rejected.
   if (!flags.forceOwner && args[0] === "--force-owner") {
@@ -798,7 +825,7 @@ function parseReadArgs(args: string[]): { name: string; tail?: number; json: boo
       pollIntervalMs = parsePositiveIntegerOption(takeInlineValue(args, "--poll-interval-ms"), "--poll-interval-ms");
       continue;
     }
-    if (arg.startsWith("-")) throw new WuxError(`unknown option: ${arg}`);
+    if (arg.startsWith("-")) throw new WuxError(unknownOption(arg, "read"));
     if (name !== undefined) throw new WuxError(`unexpected argument: ${arg}`);
     name = arg;
   }
@@ -819,9 +846,9 @@ function takeInlineValue(args: string[], flag: string): string {
   return value;
 }
 
-function parseSingleName(args: string[], command: string): string {
+function parseSingleName(args: string[], command: CommandName): string {
   const name = takeRunName(args, command);
-  rejectUnknownOptions(args);
+  rejectUnknownOptions(args, command);
   if (args.length > 0) throw new WuxError(`unexpected argument: ${args[0]}`);
   return name;
 }
@@ -930,9 +957,17 @@ function parsePositiveIntegerOption(value: string | undefined, flag: string): nu
   return parsed;
 }
 
-function rejectUnknownOptions(args: string[]): void {
-  const unknown = args.find((arg) => arg.startsWith("-"));
-  if (unknown) throw new WuxError(`unknown option: ${unknown}`);
+function unknownOption(token: string, command: CommandName): string {
+  return unknownChoice("option", token, COMMAND_OPTIONS[command], `wux ${command}`);
 }
 
-export const __test = { dispatch, forwardTimeoutForCommand, parseAgeOption, parseReadArgs, parseSendArgs, remoteWuxHintFromEnv, renderSendResult, takeBackendArgs, takeValue, takeFlag };
+function rejectUnknownOptions(args: string[], command: CommandName): void {
+  const unknown = args.find((arg) => arg.startsWith("-"));
+  if (!unknown) return;
+  if (COMMAND_OPTIONS[command].some((option) => option.split(" ", 1)[0] === unknown)) {
+    throw new WuxError(`unknown option: ${unknown}`);
+  }
+  throw new WuxError(unknownOption(unknown, command));
+}
+
+export const __test = { commandOptions: COMMAND_OPTIONS, dispatch, forwardTimeoutForCommand, parseAgeOption, parseReadArgs, parseSendArgs, remoteWuxHintFromEnv, renderSendResult, takeBackendArgs, takeValue, takeFlag };

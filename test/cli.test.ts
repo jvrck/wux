@@ -56,6 +56,18 @@ describe("help", () => {
     expect(commandHelp("interrupt")).toContain("--force-owner");
     expect(commandHelp("nope")).toBeUndefined();
   });
+
+  test("documented command options match the accepted option choices", () => {
+    for (const [command, options] of Object.entries(__test.commandOptions)) {
+      if (command === "remotes" || command === "skills") continue;
+      const usage = commandHelp(command);
+      if (!usage) throw new Error(`missing help for ${command}`);
+      const usageBlock = usage.slice(0, usage.indexOf("\n\n"));
+      const documented = [...new Set(usageBlock.match(/--[a-z-]+/g) ?? [])];
+      const accepted = options.map((option) => option.split(" ", 1)[0]);
+      expect(documented).toEqual(accepted);
+    }
+  });
 });
 
 describe("global parsing", () => {
@@ -163,9 +175,20 @@ describe("dispatch", () => {
     expect(await run(["run", "shell", "--help"])).toMatchObject({ code: 0, stderr: "" });
   });
 
-  test("rejects unknown commands and options", async () => {
-    expect(await run(["nope"])).toMatchObject({ code: 1, stderr: "wux: unknown command: nope\n" });
-    expect(await run(["--wat"])).toMatchObject({ code: 1, stderr: "wux: unknown option: --wat\n" });
+  test("rejects unknown commands and options with valid choices", async () => {
+    const commands = "run, send, read, status, wait, result, mark, attach, stop, interrupt, handoff, prune, upgrade, remotes, mcp, skills, notify";
+    expect(await run(["list"])).toMatchObject({
+      code: 1,
+      stderr: `wux: unknown command: list (commands: ${commands}; see 'wux --help')\n`,
+    });
+    expect(await run(["stauts"])).toMatchObject({
+      code: 1,
+      stderr: `wux: unknown command: stauts (commands: ${commands}; see 'wux --help'); did you mean 'status'?\n`,
+    });
+    expect(await run(["--wat"])).toMatchObject({
+      code: 1,
+      stderr: "wux: unknown option: --wat (options: --local, --remote <name>, --host <host>, --host-wux <path>, --help, -h, --version, -v; see 'wux --help')\n",
+    });
   });
 
   test("json commands report failures with the shared error envelope on stdout", async () => {
@@ -257,7 +280,10 @@ describe("dispatch", () => {
     expect(await run(["stop"])).toMatchObject({ code: 1, stderr: "wux: stop requires <run-name>\n" });
     expect(await run(["stop", "--yes"])).toMatchObject({ code: 1, stderr: "wux: stop requires <run-name>\n" });
     expect(await run(["stop", "--bogus", "name"])).toMatchObject({ code: 1, stderr: "wux: stop requires <run-name>\n" });
-    expect(await run(["stop", "name", "--bogus"])).toMatchObject({ code: 1, stderr: "wux: unknown option: --bogus\n" });
+    expect(await run(["stop", "name", "--bogus"])).toMatchObject({
+      code: 1,
+      stderr: "wux: unknown option: --bogus (options: --yes; see 'wux stop --help')\n",
+    });
   });
 
   test("rejects invalid prune prefixes", async () => {
@@ -454,7 +480,7 @@ describe("dispatch", () => {
   });
 
   test("send parsing rejects option-like text without a terminator", () => {
-    expect(() => __test.parseSendArgs(["r", "--bogus"])).toThrow("unknown option: --bogus");
+    expect(() => __test.parseSendArgs(["r", "--bogus"])).toThrow("unknown option: --bogus (options: --force-owner, --json; see 'wux send --help')");
     expect(() => __test.parseSendArgs(["r", "--force-owner", "--force-owner"])).toThrow("unknown option: --force-owner");
     // --json must precede the literal text; a trailing --json is rejected, not enabled.
     expect(() => __test.parseSendArgs(["r", "hi", "--json"])).toThrow("unexpected argument: --json");
@@ -470,7 +496,22 @@ describe("dispatch", () => {
     });
     expect(__test.parseReadArgs(["r", "--tail", "5", "--json"])).toEqual({ name: "r", tail: 5, json: true, follow: false });
     expect(() => __test.parseReadArgs(["--follow", "--json", "r"])).not.toThrow();
-    expect(() => __test.parseReadArgs(["--follow", "r", "--grep", "needle"])).toThrow("unknown option: --grep");
+    expect(() => __test.parseReadArgs(["--follow", "r", "--grep", "needle"])).toThrow(
+      "unknown option: --grep (options: --tail <lines>, --json, --follow, --poll-interval-ms <ms>; see 'wux read --help')",
+    );
+  });
+
+  test("read unknown options name valid choices and preserve JSON bad-args errors", async () => {
+    const expected = "unknown option: --lines (options: --tail <lines>, --json, --follow, --poll-interval-ms <ms>; see 'wux read --help')";
+    expect(await run(["--local", "read", "r", "--lines", "5"])).toMatchObject({ code: 1, stderr: `wux: ${expected}\n`, stdout: "" });
+    expect(await run(["--local", "read", "r", "--tial", "5"])).toMatchObject({
+      code: 1,
+      stderr: "wux: unknown option: --tial (options: --tail <lines>, --json, --follow, --poll-interval-ms <ms>; see 'wux read --help'); did you mean '--tail'?\n",
+      stdout: "",
+    });
+    const json = await run(["--local", "read", "r", "--lines", "5", "--json"]);
+    expect(json).toMatchObject({ code: 1, stderr: "" });
+    expect(JSON.parse(json.stdout)).toEqual({ error: { code: "bad-args", message: expected } });
   });
 
   test("read --follow rejects json output before loading the run", async () => {
