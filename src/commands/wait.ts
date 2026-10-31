@@ -49,7 +49,7 @@ interface SnapshotMeta {
 
 interface SnapshotProbes {
   readObservation?: (name: string) => Promise<BackendSignalObservation>;
-  probeSentinel?: (name: string, lastTurnInputAt: string | null, inputMessageDigest?: string) => Promise<CompletedVia | undefined>;
+  probeSentinel?: (name: string, lastTurnInputAt: string | null, inputMessageDigest?: string, requireInputMessageDigest?: boolean) => Promise<CompletedVia | undefined>;
   readSettled?: (name: string) => Promise<WaitSettledRecord | undefined>;
 }
 
@@ -73,7 +73,10 @@ export async function resolveSignalSnapshot(meta: SnapshotMeta, probes: Snapshot
     return { outcome: "blocked", completedVia: "hook", observation };
   }
 
-  const sentinel = isShell ? undefined : await probeSentinel(meta.name, observation.lastTurnInputAt, meta.backend === "codex" ? observation.lastTurnInputDigest : undefined);
+  const sentinel =
+    isShell
+      ? undefined
+      : await probeSentinel(meta.name, observation.lastTurnInputAt, meta.backend === "codex" ? observation.lastTurnInputDigest : undefined, meta.backend === "codex");
   if (sentinel) {
     return { outcome: "done", completedVia: sentinel, observation };
   }
@@ -187,7 +190,12 @@ export async function waitCommand(options: WaitOptions): Promise<WaitResult> {
     const sentinel =
       meta.backend === "shell"
         ? undefined
-        : await probeSentinelSignal(meta.name, signalObservation?.lastTurnInputAt ?? null, meta.backend === "codex" ? signalObservation?.lastTurnInputDigest : undefined);
+        : await probeSentinelSignal(
+            meta.name,
+            signalObservation?.lastTurnInputAt ?? null,
+            meta.backend === "codex" ? signalObservation?.lastTurnInputDigest : undefined,
+            meta.backend === "codex",
+          );
     if (sentinel) {
       return settle({ ...baseResult(meta.name, "done", idleMs, timeoutMs, elapsed(startedAt, observedAt), pollIntervalMs), completedVia: sentinel });
     }
@@ -242,6 +250,7 @@ export async function probeSentinelSignal(
   name: string,
   lastTurnInputAt: string | null = null,
   expectedInputMessagesDigest?: string,
+  requireInputMessagesDigest = false,
 ): Promise<CompletedVia | undefined> {
   try {
     const path = join(runDir(name), "turn-complete");
@@ -250,6 +259,7 @@ export async function probeSentinelSignal(
       const inputAt = Date.parse(lastTurnInputAt);
       if (Number.isFinite(inputAt) && sentinel.mtimeMs <= inputAt) return undefined;
     }
+    if (requireInputMessagesDigest && expectedInputMessagesDigest === undefined) return undefined;
     if (expectedInputMessagesDigest !== undefined) {
       const content = await readFile(path, "utf8");
       if (!content.trimEnd().endsWith(` ${expectedInputMessagesDigest}`)) return undefined;

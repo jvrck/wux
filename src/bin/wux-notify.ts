@@ -46,7 +46,7 @@ export async function runNotifyCli(args: string[], options: NotifyCliOptions = {
     }
     const provenance = payloadProvenance(payload);
     await appendBackendSignal(runName, {
-      signal: await resolveSignal(runName, meta?.backend, parsedArgs, provenance),
+      signal: await resolveSignal(runName, meta?.backend, parsedArgs, payload, provenance),
       turnId: firstStringField(payload, ["turnId", "turn_id", "turn-id"]),
       lastAssistantMessage: firstStringField(payload, [
         "lastAssistantMessage",
@@ -133,17 +133,46 @@ async function resolveSignal(
   runName: string,
   backend: string | undefined,
   args: ReturnType<typeof parseNotifyArgs>,
+  payload: unknown,
   provenance: PayloadProvenance,
 ): Promise<BackendSignal | undefined> {
   if (args.explicitSignal) return args.signal;
   // Claude's Stop hook deliberately invokes the helper without a payload. Keep
   // that established explicit hook path intact; Codex must prove correlation.
-  if (args.legacySignal !== undefined && backend !== "codex") return args.legacySignal;
-  if (backend !== "codex" || provenance.payloadType !== "agent-turn-complete" || provenance.inputMessageDigest === undefined) {
+  if (backend !== "codex") return args.legacySignal ?? signalFromPayload(payload);
+  if (provenance.payloadType !== "agent-turn-complete" || provenance.inputMessageDigest === undefined) {
     return undefined;
   }
   const current = await readCurrentTurnInput(runName);
-  return current.inputMessageDigest === provenance.inputMessageDigest ? "turn-complete" : undefined;
+  if (current.inputMessageDigest !== provenance.inputMessageDigest || current.ambiguousDuplicate) return undefined;
+  if (current.expectedInputMessagesCount !== undefined && current.expectedInputMessagesCount !== provenance.inputMessagesCount) return undefined;
+  return "turn-complete";
+}
+
+function signalFromPayload(payload: unknown): BackendSignal | undefined {
+  const text = payloadSignalText(payload);
+  if (!text) return undefined;
+  const normalized = text.replaceAll(/[-\s]+/g, "_");
+  if (normalized.includes("approval") || normalized.includes("permission") || normalized.includes("user_input")) return "awaiting-approval";
+  if (
+    normalized.includes("turn_complete") ||
+    normalized.includes("turncomplete") ||
+    normalized.includes("task_complete") ||
+    normalized.includes("taskcomplete") ||
+    normalized.includes("stop")
+  ) {
+    return "turn-complete";
+  }
+  return undefined;
+}
+
+function payloadSignalText(payload: unknown): string {
+  if (payload === null || typeof payload !== "object") return "";
+  const record = payload as Record<string, unknown>;
+  return [record.type, record.event, record.eventName, record.event_name, record["event-name"], record.hookEventName, record.hook_event_name, record["hook-event-name"], record.status]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .toLowerCase();
 }
 
 async function readStdin(): Promise<string> {

@@ -54,6 +54,8 @@ export interface BackendSignalObservation {
 interface TurnInput {
   at: string | null;
   inputMessageDigest?: string;
+  expectedInputMessagesCount?: number;
+  ambiguousDuplicate?: boolean;
 }
 
 // This digest lets Codex hook payloads correlate with a send without retaining
@@ -62,6 +64,10 @@ interface TurnInput {
 // sub-turn instead ends in Codex's title-generation instruction.
 export function inputMessageDigest(message: string): string {
   return createHash("sha256").update(message).digest("hex");
+}
+
+export function normalizeCodexInput(text: string): string {
+  return text.trim();
 }
 
 // Persisted record of a `wait` settle so the read-only `result` snapshot can
@@ -150,6 +156,7 @@ export async function appendBackendSignal(runName: string, input: BackendSignalI
     at,
     ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
     ...(input.inputMessageDigest !== undefined ? { inputMessageDigest: input.inputMessageDigest } : {}),
+    ...(input.inputMessagesCount !== undefined ? { inputMessagesCount: input.inputMessagesCount } : {}),
   };
   if (input.signal !== undefined) {
     await writeFile(join(dir, "state.json"), `${JSON.stringify(state, null, 2)}
@@ -253,6 +260,7 @@ async function readBackendSignalState(runName: string): Promise<BackendSignalEve
         at: parsed.at,
         ...(typeof parsed.turnId === "string" ? { turnId: parsed.turnId } : {}),
         ...(typeof parsed.inputMessageDigest === "string" ? { inputMessageDigest: parsed.inputMessageDigest } : {}),
+        ...(typeof parsed.inputMessagesCount === "number" ? { inputMessagesCount: parsed.inputMessagesCount } : {}),
       };
     }
   } catch {
@@ -273,15 +281,27 @@ function findLastTurnInput(events: RunEvent[]): { index: number; input: TurnInpu
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
     if (!TURN_INPUT_TYPES.has(event.type)) continue;
+    const digest = typeof event.inputMessageDigest === "string" ? event.inputMessageDigest : undefined;
     return {
       index,
       input: {
         at: typeof event.at === "string" ? event.at : null,
-        ...(typeof event.inputMessageDigest === "string" ? { inputMessageDigest: event.inputMessageDigest } : {}),
+        ...(digest !== undefined ? { inputMessageDigest: digest } : {}),
+        ...(typeof event.expectedInputMessagesCount === "number" ? { expectedInputMessagesCount: event.expectedInputMessagesCount } : {}),
+        ...(digest !== undefined && hasAmbiguousDuplicate(events, index, digest) ? { ambiguousDuplicate: true } : {}),
       },
     };
   }
   return { index: -1, input: { at: null } };
+}
+
+function hasAmbiguousDuplicate(events: RunEvent[], currentIndex: number, digest: string): boolean {
+  for (let index = currentIndex - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (isBackendSignalEvent(event)) return false;
+    if (event.type === "send" && event.inputMessageDigest === digest) return true;
+  }
+  return false;
 }
 
 function signalMatchesTurn(signal: BackendSignalEvent, input: TurnInput): boolean {
