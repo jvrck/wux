@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { __test, commandHelp, help, parseGlobal, runCli } from "../src/cli";
+import { unknownChoice } from "../src/runtime/choices";
 import { tempConfig } from "./helpers";
 
 function memoryIO() {
@@ -66,9 +67,13 @@ describe("help", () => {
       if (usageEnd === -1) throw new Error(`missing usage delimiter for ${command}`);
       const usageBlock = usage.slice(0, usageEnd);
       const documented = [...new Set(usageBlock.match(/--[a-z-]+/g) ?? [])];
-      const accepted = options.map((option) => option.split(" ", 1)[0]);
-      expect(documented).toEqual(accepted);
+      const listed = options.map((option) => option.split(" ", 1)[0]);
+      expect(listed).toEqual([...documented, "--help", "-h"]);
     }
+  });
+
+  test("choice suggestions never repeat the rejected token", () => {
+    expect(unknownChoice("option", "--json", ["--json"], "wux status")).not.toContain("did you mean");
   });
 });
 
@@ -284,8 +289,72 @@ describe("dispatch", () => {
     expect(await run(["stop", "--bogus", "name"])).toMatchObject({ code: 1, stderr: "wux: stop requires <run-name>\n" });
     expect(await run(["stop", "name", "--bogus"])).toMatchObject({
       code: 1,
-      stderr: "wux: unknown option: --bogus (options: --yes; see 'wux stop --help')\n",
+      stderr: "wux: unknown option: --bogus (options: --yes, --help, -h; see 'wux stop --help')\n",
     });
+  });
+
+  test("every listed option is accepted by its command scope", async () => {
+    const helpOptions = ["--help", "-h"];
+    const scopes = [
+      { args: ["run", "shell"], options: __test.commandOptions.run },
+      { args: ["send", "r"], options: __test.commandOptions.send },
+      { args: ["read", "r"], options: __test.commandOptions.read },
+      { args: ["status"], options: __test.commandOptions.status },
+      { args: ["wait", "r"], options: __test.commandOptions.wait },
+      { args: ["result", "r"], options: __test.commandOptions.result },
+      { args: ["mark", "r", "running"], options: __test.commandOptions.mark },
+      { args: ["attach", "r"], options: __test.commandOptions.attach },
+      { args: ["stop", "r"], options: __test.commandOptions.stop },
+      { args: ["interrupt", "r"], options: __test.commandOptions.interrupt },
+      { args: ["handoff", "r"], options: __test.commandOptions.handoff },
+      { args: ["prune"], options: __test.commandOptions.prune },
+      { args: ["upgrade"], options: __test.commandOptions.upgrade },
+      { args: ["mcp"], options: __test.commandOptions.mcp },
+      { args: ["remotes"], options: helpOptions },
+      { args: ["remotes", "list"], options: ["--json", ...helpOptions] },
+      { args: ["remotes", "add", "n", "host"], options: ["--wux-path <path>", "--cwd <path>", "--default", ...helpOptions] },
+      { args: ["remotes", "show", "n"], options: ["--json", ...helpOptions] },
+      { args: ["remotes", "remove", "n"], options: helpOptions },
+      { args: ["remotes", "default", "n"], options: helpOptions },
+      { args: ["remotes", "clear-default"], options: helpOptions },
+      { args: ["remotes", "doctor", "n"], options: ["--all", "--json", ...helpOptions] },
+      { args: ["skills"], options: helpOptions },
+      { args: ["skills", "list"], options: ["--json", ...helpOptions] },
+      { args: ["skills", "show", "wux"], options: helpOptions },
+    ];
+    const optionValues: Record<string, string> = {
+      "--name": "r",
+      "--cwd": ".",
+      "--owner": "owner",
+      "--tail": "1",
+      "--poll-interval-ms": "1",
+      "--idle": "1ms",
+      "--timeout": "1ms",
+      "--prompt-file": "prompt",
+      "--wait-ms": "0",
+      "--older-than": "0",
+      "--days": "1",
+      "--prefix": "p",
+      "--wux-path": "wux",
+    };
+
+    for (const scope of scopes) {
+      const unknown = await run([...scope.args, "--not-an-option"]);
+      const match = /unknown option: --not-an-option \(options: (.*); see/.exec(unknown.stderr);
+      expect(match?.[1].split(", ")).toEqual([...scope.options]);
+
+      for (const choice of scope.options) {
+        const option = choice.split(" ", 1)[0];
+        const args = [...scope.args, option];
+        if (optionValues[option]) args.push(optionValues[option]);
+        const result = await run(helpOptions.includes(option) ? args : [...args, "--not-an-option"]);
+        if (helpOptions.includes(option)) {
+          expect(result.code).toBe(0);
+        } else {
+          expect(`${result.stdout}${result.stderr}`).toContain("unknown option: --not-an-option");
+        }
+      }
+    }
   });
 
   test("rejects invalid prune prefixes", async () => {
@@ -482,7 +551,7 @@ describe("dispatch", () => {
   });
 
   test("send parsing rejects option-like text without a terminator", () => {
-    expect(() => __test.parseSendArgs(["r", "--bogus"])).toThrow("unknown option: --bogus (options: --force-owner, --json; see 'wux send --help')");
+    expect(() => __test.parseSendArgs(["r", "--bogus"])).toThrow("unknown option: --bogus (options: --force-owner, --json, --help, -h; see 'wux send --help')");
     expect(() => __test.parseSendArgs(["r", "--force-owner", "--force-owner"])).toThrow("unknown option: --force-owner");
     // --json must precede the literal text; a trailing --json is rejected, not enabled.
     expect(() => __test.parseSendArgs(["r", "hi", "--json"])).toThrow("unexpected argument: --json");
@@ -499,16 +568,16 @@ describe("dispatch", () => {
     expect(__test.parseReadArgs(["r", "--tail", "5", "--json"])).toEqual({ name: "r", tail: 5, json: true, follow: false });
     expect(() => __test.parseReadArgs(["--follow", "--json", "r"])).not.toThrow();
     expect(() => __test.parseReadArgs(["--follow", "r", "--grep", "needle"])).toThrow(
-      "unknown option: --grep (options: --tail <lines>, --json, --follow, --poll-interval-ms <ms>; see 'wux read --help')",
+      "unknown option: --grep (options: --tail <lines>, --json, --follow, --poll-interval-ms <ms>, --help, -h; see 'wux read --help')",
     );
   });
 
   test("read unknown options name valid choices and preserve JSON bad-args errors", async () => {
-    const expected = "unknown option: --lines (options: --tail <lines>, --json, --follow, --poll-interval-ms <ms>; see 'wux read --help')";
+    const expected = "unknown option: --lines (options: --tail <lines>, --json, --follow, --poll-interval-ms <ms>, --help, -h; see 'wux read --help')";
     expect(await run(["--local", "read", "r", "--lines", "5"])).toMatchObject({ code: 1, stderr: `wux: ${expected}\n`, stdout: "" });
     expect(await run(["--local", "read", "r", "--tial", "5"])).toMatchObject({
       code: 1,
-      stderr: "wux: unknown option: --tial (options: --tail <lines>, --json, --follow, --poll-interval-ms <ms>; see 'wux read --help'); did you mean '--tail'?\n",
+      stderr: "wux: unknown option: --tial (options: --tail <lines>, --json, --follow, --poll-interval-ms <ms>, --help, -h; see 'wux read --help'); did you mean '--tail'?\n",
       stdout: "",
     });
     const json = await run(["--local", "read", "r", "--lines", "5", "--json"]);

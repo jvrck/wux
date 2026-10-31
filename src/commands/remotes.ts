@@ -72,16 +72,17 @@ const REMOTE_CRITICAL = ["ssh", "wux", "tmux"];
 const LOCAL_CRITICAL = ["wux", "tmux"];
 const GROK_VERSION_TIMEOUT_MS = 5_000;
 const HELP_OPTIONS = ["--help", "-h"] as const;
+const withHelpOptions = (options: readonly string[]): readonly string[] => [...options, ...HELP_OPTIONS];
 const REMOTES_COMMANDS = ["list", "add", "show", "remove", "default", "clear-default", "doctor"] as const;
 type RemotesCommand = (typeof REMOTES_COMMANDS)[number];
 const REMOTES_OPTIONS: Record<RemotesCommand, readonly string[]> = {
-  list: ["--json"],
-  add: ["--wux-path <path>", "--cwd <path>", "--default"],
-  show: ["--json"],
+  list: withHelpOptions(["--json"]),
+  add: withHelpOptions(["--wux-path <path>", "--cwd <path>", "--default"]),
+  show: withHelpOptions(["--json"]),
   remove: HELP_OPTIONS,
   default: HELP_OPTIONS,
   "clear-default": HELP_OPTIONS,
-  doctor: ["--all", "--json"],
+  doctor: withHelpOptions(["--all", "--json"]),
 };
 
 export async function remotesCommand(args: string[], io: RemotesIO, deps: RemotesDeps = {}): Promise<void> {

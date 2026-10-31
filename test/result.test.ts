@@ -275,7 +275,7 @@ describe("result", () => {
   test("CLI: result rejects unknown options and stray arguments", async () => {
     const bad = memoryIO();
     expect(await runCli(["--local", "result", "r", "--bogus"], bad.io)).toBe(1);
-    expect(bad.output().stderr).toBe("wux: unknown option: --bogus (options: --json; see 'wux result --help')\n");
+    expect(bad.output().stderr).toBe("wux: unknown option: --bogus (options: --json, --help, -h; see 'wux result --help')\n");
 
     const extra = memoryIO();
     expect(await runCli(["--local", "result", "r", "trailing"], extra.io)).toBe(1);

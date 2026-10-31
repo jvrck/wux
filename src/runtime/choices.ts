@@ -21,7 +21,7 @@ function choiceToken(choice: string): string {
 }
 
 export function unknownChoice(kind: string, token: string, choices: readonly string[], helpTarget: string): string {
-  const matches = choices.map(choiceToken).filter((choice) => editDistance(token, choice) <= 2);
+  const matches = choices.map(choiceToken).filter((choice) => choice !== token && editDistance(token, choice) <= 2);
   const suggestion = matches.length === 1 ? `; did you mean '${matches[0]}'?` : "";
   const listedChoices = choices.length > 0 ? choices.join(", ") : "none";
   return `unknown ${kind}: ${token} (${kind}s: ${listedChoices}; see '${helpTarget} --help')${suggestion}`;

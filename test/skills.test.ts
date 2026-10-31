@@ -103,7 +103,7 @@ describe("skills command", () => {
     expect(await run(["skills", "list", "--lines"])).toMatchObject({
       code: 1,
       stdout: "",
-      stderr: "wux: unknown option: --lines (options: --json; see 'wux skills --help')\n",
+      stderr: "wux: unknown option: --lines (options: --json, --help, -h; see 'wux skills --help')\n",
     });
     expect(await run(["skills", "show", "wux", "--x"])).toMatchObject({
       code: 1,

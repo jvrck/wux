@@ -42,7 +42,7 @@ export async function skillsCommand(args: string[], io: SkillsIO): Promise<void>
 
 function listSkills(args: string[], io: SkillsIO): void {
   const json = takeFlag(args, "--json");
-  rejectUnknownOptions(args, ["--json"]);
+  rejectUnknownOptions(args, ["--json", ...HELP_OPTIONS]);
   rejectUnexpectedArgs(args);
 
   const names = BUNDLED_SKILLS.map((skill) => skill.name);

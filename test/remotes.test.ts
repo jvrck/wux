@@ -89,7 +89,7 @@ describe("remotes command", () => {
     expect(await run(["remotes", "list", "--lines"])).toMatchObject({
       code: 1,
       stdout: "",
-      stderr: "wux: unknown option: --lines (options: --json; see 'wux remotes --help')\n",
+      stderr: "wux: unknown option: --lines (options: --json, --help, -h; see 'wux remotes --help')\n",
     });
     expect(await run(["remotes", "remove", "n", "--x"])).toMatchObject({
       code: 1,

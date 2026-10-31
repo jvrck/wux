@@ -35,25 +35,27 @@ const MARK_STATUSES = new Set<MarkStatus>(["waiting", "blocked", "running", "sto
 type CommandName = (typeof COMMANDS)[number];
 type OperationalCommandName = (typeof OPERATIONAL_COMMANDS)[number];
 
-const GLOBAL_OPTIONS = ["--local", "--remote <name>", "--host <host>", "--host-wux <path>", "--help", "-h", "--version", "-v"] as const;
+const HELP_OPTIONS = ["--help", "-h"] as const;
+const GLOBAL_OPTIONS = ["--local", "--remote <name>", "--host <host>", "--host-wux <path>", ...HELP_OPTIONS, "--version", "-v"] as const;
+const withHelpOptions = (options: readonly string[]): readonly string[] => [...options, ...HELP_OPTIONS];
 const COMMAND_OPTIONS: Record<CommandName, readonly string[]> = {
-  run: ["--name <run-name>", "--cwd <path>", "--owner <owner>", "--json"],
-  send: ["--force-owner", "--json"],
-  read: ["--tail <lines>", "--json", "--follow", "--poll-interval-ms <ms>"],
-  status: ["--json"],
-  wait: ["--idle <duration>", "--timeout <duration>", "--poll-interval-ms <ms>", "--json", "--result"],
-  result: ["--json"],
-  mark: [],
-  attach: [],
-  stop: ["--yes"],
-  interrupt: ["--force-owner"],
-  handoff: ["--prompt-file <path>", "--wait-ms <ms>", "--tail <lines>"],
-  prune: ["--older-than <duration>", "--days <days>", "--prefix <prefix>", "--reconcile", "--dry-run"],
-  upgrade: ["--check", "--yes"],
-  remotes: [],
-  mcp: ["--allow-raw-host"],
-  skills: [],
-  notify: [],
+  run: withHelpOptions(["--name <run-name>", "--cwd <path>", "--owner <owner>", "--json"]),
+  send: withHelpOptions(["--force-owner", "--json"]),
+  read: withHelpOptions(["--tail <lines>", "--json", "--follow", "--poll-interval-ms <ms>"]),
+  status: withHelpOptions(["--json"]),
+  wait: withHelpOptions(["--idle <duration>", "--timeout <duration>", "--poll-interval-ms <ms>", "--json", "--result"]),
+  result: withHelpOptions(["--json"]),
+  mark: HELP_OPTIONS,
+  attach: HELP_OPTIONS,
+  stop: withHelpOptions(["--yes"]),
+  interrupt: withHelpOptions(["--force-owner"]),
+  handoff: withHelpOptions(["--prompt-file <path>", "--wait-ms <ms>", "--tail <lines>"]),
+  prune: withHelpOptions(["--older-than <duration>", "--days <days>", "--prefix <prefix>", "--reconcile", "--dry-run"]),
+  upgrade: withHelpOptions(["--check", "--yes"]),
+  remotes: HELP_OPTIONS,
+  mcp: withHelpOptions(["--allow-raw-host"]),
+  skills: HELP_OPTIONS,
+  notify: HELP_OPTIONS,
 };
 
 export interface CliDeps {
