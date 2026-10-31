@@ -29,7 +29,7 @@ hosts. **Mutations** (`open`/`send`/`interrupt`/`stop`) require an explicit
 | --- | --- | --- | --- |
 | `open` | mutation | `backend` (`shell` \| `claude` \| `codex` \| `grok`), `name`, `cwd`, `target` | Open a durable session (`run`). `name`/`cwd` required. |
 | `list` | observation | `target?`, `name?` | List runs with status, owner, and `lastInputBy`/`lastInputAt`. |
-| `send` | mutation | `name`, `text`, `target`, `forceOwner?` | Send text + Enter; returns an honest `submission` verdict (`submitted`/`uncertain`/`not-submitted`) — a non-`submitted` result is a **warning**, never a clean success. |
+| `send` | mutation | `name`, `text`, `target`, `forceOwner?` | Send text + Enter when safe; returns an honest `submission` verdict (`submitted`/`uncertain`/`not-submitted`) plus `enter` (`sent`/`withheld-busy`) and `resend` (`sent`/`skipped-busy`/`skipped-unknown`/`not-needed`). A non-`submitted` result is a **warning**, never a clean success. |
 | `read` | observation | `name`, `target?`, `tail?` | Return a **labeled pane capture** (raw TUI, may be truncated); for a local target it also includes `pane.log` / run-dir paths. |
 | `interrupt` | mutation | `name`, `target`, `forceOwner?` | Send a single `C-c` to a run's current turn. |
 | `stop` | mutation | `name`, `target`, `yes:true` | Stop a run (destructive; requires `yes:true`). |

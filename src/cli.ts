@@ -134,9 +134,11 @@ interprets these args. Example headless launch:
 
 Sends literal text plus Enter to a run, then reports whether the backend accepted
 the submit. The verdict (submitted | uncertain | not-submitted) is a heuristic
-over the pane, not an end-of-turn signal; a non-submitted send retries Enter once.
+over the pane, not an end-of-turn signal. For claude/codex, Enter is held while
+the pane looks busy and resent once only after it is seen at rest again; other
+backends retry Enter once. See docs/commands.md for readiness-gate details.
 Options must precede <text>; use -- before literal text that starts with an
-option-like value. --json prints {name, submission, retried, bytes}.
+option-like value. --json prints {name, submission, enter, resend, retried, bytes}.
 `,
   read: `Usage:
   wux read <run-name> [--tail <lines>] [--json]
@@ -696,14 +698,21 @@ function parseSendArgs(args: string[]): { name: string; text?: string; forceOwne
 export function renderSendResult(result: SendResult, json: boolean): { stdout?: string; stderr?: string } {
   if (json) {
     return {
-      stdout: `${JSON.stringify({ name: result.name, submission: result.submission, retried: result.retried, bytes: result.bytes })}\n`,
+      stdout: `${JSON.stringify({ name: result.name, submission: result.submission, enter: result.enter, resend: result.resend, retried: result.retried, bytes: result.bytes })}\n`,
     };
   }
-  const retried = result.retried ? ", retried" : "";
+  const enter = result.enter === "sent" ? "Enter sent" : "Enter withheld: pane busy";
+  const resend = result.resend === "sent"
+    ? "resend sent"
+    : result.resend === "skipped-busy"
+      ? "resend skipped: pane busy"
+      : result.resend === "skipped-unknown"
+        ? "resend skipped: pane state unknown"
+        : "resend not needed";
   if (result.submission === "submitted") {
-    return { stdout: `sent ${result.bytes} bytes to ${result.name} (submitted${retried})\n` };
+    return { stdout: `sent ${result.bytes} bytes to ${result.name} (submitted; ${enter}; ${resend})\n` };
   }
-  return { stderr: `wux: warning: ${result.name} may not have submitted (${result.submission}${retried})\n` };
+  return { stderr: `wux: warning: ${result.name} may not have submitted (${result.submission}; ${enter}; ${resend})\n` };
 }
 
 function forwardTimeoutForCommand(command: string | undefined, args: string[] = []): number | undefined {

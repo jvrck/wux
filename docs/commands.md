@@ -122,10 +122,12 @@ wux send smoke "printf 'hello from wux\n'"
 wux send smoke --json "printf 'hello from wux\n'"
 ```
 
-`send` resolves run metadata, refuses missing/stopped/dead sessions, checks ownership, sends literal text plus Enter, and appends a structured send event with byte count only. Use `--force-owner` to intentionally send to a run owned by another orchestrator.
+`send` resolves run metadata, refuses missing/stopped/dead sessions, checks ownership, sends literal text plus Enter when safe, and appends a structured send event with its byte count and submit verdict. Use `--force-owner` to intentionally send to a run owned by another orchestrator.
 
 `--json` must appear before the literal text and prints
-`{name, submission, retried, bytes}`.
+`{name, submission, enter, resend, retried, bytes}`. `enter` is `sent` or
+`withheld-busy`; `resend` is `sent`, `skipped-busy`, `skipped-unknown`, or
+`not-needed`. `retried` is true exactly when `resend` is `sent`.
 
 ### Readiness gate (claude/codex)
 
@@ -133,8 +135,11 @@ On a busy Ink TUI a blind Enter is dropped and the typed text **strands** in the
 composer. For `claude`/`codex` runs, `send` therefore **always types the literal**
 (so a deliberate send-to-busy never loses bytes) but **gates the submit**: it waits
 a short, bounded window for the typed text to render and the pane to be at-rest
-before pressing Enter, and on a strand it re-confirms the pane left the busy state
-before a single resend. The wait is hard-bounded (a small fixed number of samples,
+before pressing Enter. If the pane is positively busy, it withholds that first
+Enter and reports `enter: "withheld-busy"`. On a strand it re-confirms that the
+pane left the busy state before a single resend; otherwise it reports whether the
+resend was skipped because the pane stayed busy or could not be re-observed. The
+wait is hard-bounded (a small fixed number of samples,
 ~1s) — it rides out the post-turn redraw race, not a multi-second turn. A send into
 a pane that stays genuinely busy returns an honest non-`submitted` verdict rather
 than a silent strand; gate completion on `wait` plus ground truth, never on the

@@ -18,7 +18,8 @@ export function register(server: McpServer, ctx: ToolContext): void {
         "Send literal text plus Enter to a live run and report whether the backend accepted the submit. " +
         "Inspectable durable TUI session control — not autonomous task execution. " +
         "The submission verdict is a heuristic over the pane, not an end-of-turn signal; " +
-        "a non-submitted verdict is a warning, never a clean success. target is required (mutation).",
+        "enter reports whether the first Enter was sent or withheld as busy, and resend reports any retry decision. " +
+        "A non-submitted verdict is a warning, never a clean success. target is required (mutation).",
       inputSchema: {
         name: z.string().min(1),
         text: z.string(),
@@ -71,6 +72,8 @@ function parseSendResult(stdout: string): SendResult | null {
     if (
       typeof value.name === "string" &&
       typeof value.submission === "string" &&
+      typeof value.enter === "string" &&
+      typeof value.resend === "string" &&
       typeof value.retried === "boolean" &&
       typeof value.bytes === "number"
     ) {
@@ -92,11 +95,21 @@ export function sendPayload(resolved: ResolvedTarget, result: SendResult): Recor
     name: result.name,
     bytes: result.bytes,
     submission: result.submission,
+    enter: result.enter,
+    resend: result.resend,
     retried: result.retried,
     submitted,
   };
   if (!submitted) {
-    payload.warning = `${result.name} may not have submitted (${result.submission}${result.retried ? ", retried" : ""}); this is not a clean success`;
+    const enter = result.enter === "sent" ? "Enter sent" : "Enter withheld: pane busy";
+    const resend = result.resend === "sent"
+      ? "resend sent"
+      : result.resend === "skipped-busy"
+        ? "resend skipped: pane busy"
+        : result.resend === "skipped-unknown"
+          ? "resend skipped: pane state unknown"
+          : "resend not needed";
+    payload.warning = `${result.name} may not have submitted (${result.submission}; ${enter}; ${resend}); this is not a clean success`;
   }
   return payload;
 }

@@ -357,9 +357,13 @@ export async function killSession(session: string, connection: TmuxConnection = 
 // Honest-submit verdict. This is a HEURISTIC over the pane, not an end-of-turn
 // signal: it answers "did the prompt submit", not "did the turn finish".
 export type Submission = "submitted" | "uncertain" | "not-submitted";
+export type EnterDisposition = "sent" | "withheld-busy";
+export type ResendDisposition = "sent" | "skipped-busy" | "skipped-unknown" | "not-needed";
 
 export interface SubmitResult {
   submission: Submission;
+  enter: EnterDisposition;
+  resend: ResendDisposition;
   retried: boolean;
 }
 
@@ -602,46 +606,48 @@ function normalizeReadyFrame(frame: string): string {
     .replace(/\n+$/g, "");
 }
 
+interface ReadinessSnapshot {
+  composer: string;
+  busy: boolean;
+}
+
+function readinessSnapshot(frame: string, text: string): ReadinessSnapshot | undefined {
+  const lines = normalizeReadyFrame(frame).split("\n");
+  const anchor = composerTextAnchor(lines.join("\n"), toNeedles(text));
+  if (anchor.presence !== "held") return undefined;
+  const start = anchor.start ?? -1;
+  const end = anchor.end ?? -1;
+  const busy = lines.some((line, index) => (index < start || index > end) && BUSY_INDICATOR_RE.test(line));
+  return { composer: lines.slice(start, end + 1).join("\n"), busy };
+}
+
 // Decide whether the composer is at-rest and safe to submit into, from the two
 // most-recent frames (most-recent last) plus the sent text. "ready" requires all
 // three: (1) the sent literal actually rendered onto a composer line — NOT bare
 // marker presence, so at-rest ghost/placeholder text and the stale post-type
 // redraw frame are never "ready"; (2) no busy indicator OFF the composer line(s)
 // — so typed text or scrollback containing "esc to interrupt" cannot pin a false
-// busy; (3) the two frames are byte-static — so a streaming/redrawing pane is not
-// "ready". Pure; tests drive it with fixtures captured off real claude/codex panes.
+// busy; (3) the composer and busy anchor are static — incidental status/banners
+// can redraw while an idle pane is still safe. Pure; tests drive it with fixtures
+// captured off real claude/codex panes.
 export function classifyComposerReady(frames: string[], text: string): ComposerReadiness {
   if (frames.length < 2) return "unknown";
   const last = normalizeReadyFrame(frames[frames.length - 1]);
-  const prev = normalizeReadyFrame(frames[frames.length - 2]);
   if (last.trim().length === 0) return "unknown";
+  if (toNeedles(text).length === 0) return "unknown";
 
-  const needles = toNeedles(text);
-  if (needles.length === 0) return "unknown";
+  const current = readinessSnapshot(last, text);
+  if (!current) return "unknown";
+  // Never call a pane ready while its current status row says a turn can be
+  // interrupted. The busy anchor is more reliable than incidental redraws.
+  if (current.busy) return "busy";
 
-  // The typed literal must be fully on the composer; otherwise it is still
-  // rendering (redraw race), still showing ghost text, or already gone — not the
-  // moment to submit.
-  const anchor = composerTextAnchor(last, needles);
-  if (anchor.presence !== "held") return "unknown";
-
-  // Busy check scoped OFF the composer's own line(s): the indicator lives in the
-  // status row, so the literal sitting in the composer cannot trip it. The span is
-  // estimated as one row per sent line; a sent line that visually WRAPS occupies
-  // more rows, so the estimate can be short — but that only over-checks rows for
-  // the busy indicator (a bounded, conservative false-busy that withholds the
-  // submit), never under-checks into a false "ready" that would strand.
-  const lines = last.split("\n");
-  const start = anchor.start ?? -1;
-  const end = anchor.end ?? -1;
-  const busyOutsideComposer = lines.some((line, index) => {
-    if (index >= start && index <= end) return false;
-    return BUSY_INDICATOR_RE.test(line);
-  });
-  if (busyOutsideComposer) return "busy";
-
-  // Still changing between the two most-recent frames → streaming/redrawing.
-  if (last !== prev) return "busy";
+  const previous = readinessSnapshot(frames[frames.length - 2], text);
+  if (!previous) return "unknown";
+  // Compare the composer and busy anchor only. At-rest Claude/Codex panes redraw
+  // banners, counters, and status rows between captures; those rows do not make
+  // Enter unsafe. A changing composer or busy-anchor state remains conservative.
+  if (previous.busy || previous.composer !== current.composer) return "busy";
 
   return "ready";
 }
@@ -721,7 +727,7 @@ export async function sendLiteral(session: string, text: string, options: SendLi
   if (backend === "shell") {
     await sendKeysOnce(connection, target, session, ["-l", text], "send text to");
     await sendKeysOnce(connection, target, session, ["Enter"], "submit text to");
-    return { submission: "submitted", retried: false };
+    return { submission: "submitted", enter: "sent", resend: "not-needed", retried: false };
   }
 
   const env = options.env ?? process.env;
@@ -759,9 +765,13 @@ export async function sendLiteral(session: string, text: string, options: SendLi
   }
 
   let submission: Submission;
+  let enter: EnterDisposition = "sent";
+  let resend: ResendDisposition = "not-needed";
   let retried = false;
 
   if (preReady === "busy") {
+    enter = "withheld-busy";
+    resend = "skipped-busy";
     submission = classifySubmission(before, await probe(), text, backend);
   } else {
     await sendKeysOnce(connection, target, session, ["Enter"], "submit text to");
@@ -774,17 +784,23 @@ export async function sendLiteral(session: string, text: string, options: SendLi
       // re-confirm the pane left busy and resend only then; on the legacy path keep
       // the single blind retry. Always re-read after, so a send that landed late is
       // not reported as a stale not-submitted.
-      const mayResend = gated ? (await waitForComposerReady(probe, text, probeOpts)) === "ready" : true;
+      const resendReady = gated ? await waitForComposerReady(probe, text, probeOpts) : "ready";
+      const mayResend = resendReady === "ready";
       if (mayResend) {
         await sendKeysOnce(connection, target, session, ["Enter"], "submit text to");
+        resend = "sent";
         retried = true;
         await sleep(settleMs);
+      } else if (resendReady === "busy") {
+        resend = "skipped-busy";
+      } else {
+        resend = "skipped-unknown";
       }
       submission = classifySubmission(before, await probe(), text, backend);
     }
   }
 
-  return { submission, retried };
+  return { submission, enter, resend, retried };
 }
 
 export async function capturePane(session: string, tail: number, connection: TmuxConnection = ambientTmuxConnection()): Promise<string> {

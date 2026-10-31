@@ -1,0 +1,10 @@
+╭─────────────────────────────────────────╮
+│ >_ OpenAI Codex                         │
+│ model: gpt-5.5                          │
+╰─────────────────────────────────────────╯
+
+  Context updated · 1,024 tokens remaining
+
+› summarize the readme please
+
+  gpt-5.5 default · workspace

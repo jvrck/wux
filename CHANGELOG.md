@@ -12,6 +12,7 @@ intentionally not reproduced here.
 
 ### Changed
 
+- Send results now explain whether the initial Enter was sent or withheld and whether a one-time resend was sent, skipped because the pane was busy, skipped because the pane was unobservable, or not needed.
 - Unknown commands and unrecognized options now list valid choices and suggest a close spelling without accepting aliases. A repeated valid option keeps its plain `unknown option: <flag>` message.
 
 ### Fixed
