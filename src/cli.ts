@@ -721,7 +721,7 @@ export function renderSendResult(result: SendResult, json: boolean): { stdout?: 
 function forwardTimeoutForCommand(command: string | undefined, args: string[] = []): number | undefined {
   // Long-blocking forwarded commands are bounded by their own lifecycle and SSH
   // ConnectTimeout. 0 disables the generic command timeout.
-  return command === "attach" || command === "wait" || (command === "read" && (hasOptionBeforeTerminator(args, "--follow") || hasOptionBeforeTerminator(args, "--log"))) ? 0 : undefined;
+  return command === "attach" || command === "wait" || (command === "read" && hasOptionBeforeTerminator(args, "--follow")) ? 0 : undefined;
 }
 
 function jsonErrorRequested(rawArgs: string[]): boolean {

@@ -310,6 +310,29 @@ describe("ssh transport", () => {
     }
   });
 
+  test("honors an explicit timeout while streaming a raw read-log", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wux-read-log-timeout-"));
+    const fakeSsh = join(dir, "ssh");
+    const previousPath = process.env.PATH;
+    writeFileSync(fakeSsh, "#!/bin/sh\nsleep 1\n");
+    chmodSync(fakeSsh, 0o755);
+    process.env.PATH = `${dir}:${previousPath ?? ""}`;
+
+    try {
+      const code = await forwardSshCommand({
+        host: "worker",
+        args: ["read", "--log", "r"],
+        io: memoryIO().io,
+        timeoutMs: 10,
+      });
+      expect(code).toBe(124);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("does not treat --log after a terminator as a raw-log stream", async () => {
     const dir = mkdtempSync(join(tmpdir(), "wux-read-log-terminator-"));
     const fakeSsh = join(dir, "ssh");

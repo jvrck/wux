@@ -490,8 +490,8 @@ describe("dispatch", () => {
     expect(__test.forwardTimeoutForCommand("wait")).toBe(0);
     expect(__test.forwardTimeoutForCommand("read", ["--follow", "run-name"])).toBe(0);
     expect(__test.forwardTimeoutForCommand("read", ["run-name", "--follow"])).toBe(0);
-    expect(__test.forwardTimeoutForCommand("read", ["--log", "run-name"])).toBe(0);
-    expect(__test.forwardTimeoutForCommand("read", ["run-name", "--log"])).toBe(0);
+    expect(__test.forwardTimeoutForCommand("read", ["--log", "run-name"])).toBeUndefined();
+    expect(__test.forwardTimeoutForCommand("read", ["run-name", "--log"])).toBeUndefined();
     expect(__test.forwardTimeoutForCommand("read", ["run-name"])).toBeUndefined();
     expect(__test.forwardTimeoutForCommand("status")).toBeUndefined();
   });

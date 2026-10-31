@@ -266,6 +266,19 @@ describe("read", () => {
     }
   });
 
+  test("--log validates a run name and positive integer tail through the CLI", async () => {
+    for (const args of [
+      ["--local", "read", "--log"],
+      ["--local", "read", "--log", "run", "--tail", "0"],
+      ["--local", "read", "--log", "run", "--tail", "-1"],
+      ["--local", "read", "--log", "run", "--tail", "1.5"],
+    ]) {
+      const memory = bufferIO();
+      expect(await runCli(args, memory.io)).toBe(1);
+      expect(`${memory.stdout()}${memory.stderr()}`).toMatch(/read requires <run-name>|--tail/);
+    }
+  });
+
   test("rejects invalid tail, missing runs, and absent sessions", async () => {
     if (!(await hasTmux())) return;
     const temp = await tempState();

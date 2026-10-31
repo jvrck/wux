@@ -85,11 +85,19 @@ describe("runProcess", () => {
 
   test("exits cleanly when a downstream writer closes during backpressure", async () => {
     const events = new EventEmitter();
+    let writes = 0;
+    let writesAfterClose = 0;
+    let closed = false;
     const outcome = await Promise.race([
       runProcess([process.execPath, "-e", "process.stdout.write(Buffer.alloc(16 * 1024 * 1024))"], {
         stdoutWriter: {
           write: () => {
-            setTimeout(() => events.emit("close"), 10);
+            writes += 1;
+            if (closed) writesAfterClose += 1;
+            setTimeout(() => {
+              closed = true;
+              events.emit("close");
+            }, 10);
             return false;
           },
           once: events.once.bind(events),
@@ -100,6 +108,8 @@ describe("runProcess", () => {
     ]);
 
     expect(outcome).toMatchObject({ code: 0, stdout: "" });
+    expect(writes).toBeGreaterThan(0);
+    expect(writesAfterClose).toBe(0);
   });
 
   test("continues when an injectable writer reports backpressure without drain events", async () => {

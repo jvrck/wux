@@ -77,8 +77,14 @@ export async function readLog(options: ReadLogOptions): Promise<void> {
   const meta = await loadRunMeta(options.name);
   const path = join(runDir(meta.name), "pane.log");
   try {
-    const start = options.tail === undefined ? 0 : await tailStart(path, options.tail);
-    await emitLogBytes(path, start, options.writer);
+    const handle = await open(path, "r");
+    try {
+      const size = (await handle.stat()).size;
+      const start = options.tail === undefined ? 0 : await tailStart(handle, size, options.tail);
+      await emitLogBytes(handle, size, start, options.writer);
+    } finally {
+      await handle.close();
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       throw new WuxError(`no pane log for ${meta.name}`);
@@ -162,56 +168,44 @@ async function emitAppendedBytes(path: string, offset: number, decoder: StringDe
   }
 }
 
-async function emitLogBytes(path: string, offset: number, writer: ByteWriter): Promise<void> {
-  const handle = await open(path, "r");
-  try {
-    const size = (await handle.stat()).size;
-    let cursor = offset;
-    while (cursor < size) {
-      const length = Math.min(64 * 1024, size - cursor);
-      // Each output chunk owns its backing buffer: writers may retain it after
-      // write() returns, so it must never be reused by a later filesystem read.
-      const chunk = Buffer.allocUnsafe(length);
-      const bytesRead = await readRange(handle, chunk, cursor, length);
-      if (bytesRead === 0) break;
-      if (writer.write(chunk.subarray(0, bytesRead)) === false && !(await waitForWritable(writer))) return;
-      cursor += bytesRead;
-    }
-  } finally {
-    await handle.close();
+async function emitLogBytes(handle: FileHandle, size: number, offset: number, writer: ByteWriter): Promise<void> {
+  let cursor = offset;
+  while (cursor < size) {
+    const length = Math.min(64 * 1024, size - cursor);
+    // Each output chunk owns its backing buffer: writers may retain it after
+    // write() returns, so it must never be reused by a later filesystem read.
+    const chunk = Buffer.allocUnsafe(length);
+    const bytesRead = await readRange(handle, chunk, cursor, length);
+    if (bytesRead === 0) break;
+    if (writer.write(chunk.subarray(0, bytesRead)) === false && !(await waitForWritable(writer))) return;
+    cursor += bytesRead;
   }
 }
 
 // Finds the byte offset for tail-like output without loading the full log. A
 // trailing newline terminates an empty final record, so it needs one additional
 // separator to retain the requested number of completed lines.
-async function tailStart(path: string, lines: number): Promise<number> {
-  const handle = await open(path, "r");
-  try {
-    const size = (await handle.stat()).size;
-    if (size === 0) return 0;
+async function tailStart(handle: FileHandle, size: number, lines: number): Promise<number> {
+  if (size === 0) return 0;
 
-    const finalByte = Buffer.allocUnsafe(1);
-    if ((await readRange(handle, finalByte, size - 1, 1)) !== 1) return 0;
-    const separatorsNeeded = lines + (finalByte[0] === 0x0a ? 1 : 0);
-    const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, size));
-    let cursor = size;
-    let separators = 0;
+  const finalByte = Buffer.allocUnsafe(1);
+  if ((await readRange(handle, finalByte, size - 1, 1)) !== 1) return 0;
+  const separatorsNeeded = lines + (finalByte[0] === 0x0a ? 1 : 0);
+  const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, size));
+  let cursor = size;
+  let separators = 0;
 
-    while (cursor > 0) {
-      const start = Math.max(0, cursor - buffer.length);
-      const bytesRead = await readRange(handle, buffer, start, cursor - start);
-      for (let index = bytesRead - 1; index >= 0; index -= 1) {
-        if (buffer[index] !== 0x0a) continue;
-        separators += 1;
-        if (separators >= separatorsNeeded) return start + index + 1;
-      }
-      cursor = start;
+  while (cursor > 0) {
+    const start = Math.max(0, cursor - buffer.length);
+    const bytesRead = await readRange(handle, buffer, start, cursor - start);
+    for (let index = bytesRead - 1; index >= 0; index -= 1) {
+      if (buffer[index] !== 0x0a) continue;
+      separators += 1;
+      if (separators >= separatorsNeeded) return start + index + 1;
     }
-    return 0;
-  } finally {
-    await handle.close();
+    cursor = start;
   }
+  return 0;
 }
 
 async function readRange(handle: FileHandle, buffer: Uint8Array, position: number, length: number): Promise<number> {

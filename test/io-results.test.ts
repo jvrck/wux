@@ -9,7 +9,7 @@ import { sendCommand } from "../src/commands/send";
 import { statusCommand } from "../src/commands/status";
 import { stopCommand } from "../src/commands/stop";
 import { appendEvent, lastInput, readEvents } from "../src/runtime/events";
-import { bufferIO } from "../src/runtime/io";
+import { bufferIO, waitForWritable } from "../src/runtime/io";
 import { currentOwner } from "../src/runtime/owner";
 import { hasTmux, killTmux, tempState } from "./helpers";
 
@@ -44,6 +44,19 @@ describe("bufferIO", () => {
     buffer.io.stdout.write(Buffer.from([0xe2]));
     buffer.io.stdout.write(Buffer.from([0x82, 0xac]));
     expect(buffer.stdout()).toBe("€");
+  });
+
+  test("preserves a surrogate pair split across string writes", () => {
+    const buffer = bufferIO();
+    buffer.io.stdout.write("\ud83d");
+    buffer.io.stdout.write("\ude80");
+    expect(buffer.stdout()).toBe("🚀");
+  });
+
+  test("treats a writer already closed during backpressure as unwritable", async () => {
+    await expect(waitForWritable({ write: () => false, destroyed: true })).resolves.toBe(false);
+    await expect(waitForWritable({ write: () => false, writableEnded: true })).resolves.toBe(false);
+    await expect(waitForWritable({ write: () => false, closed: true })).resolves.toBe(false);
   });
 });
 

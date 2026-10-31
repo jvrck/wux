@@ -38,6 +38,7 @@ export function runProcess(args: string[], options: ProcessOptions = {}): Promis
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string | Buffer) => {
       if (options.stdoutWriter) {
+        if (outputClosed) return;
         const bytes = Buffer.from(chunk);
         if (options.stdoutWriter.write(bytes) === false) {
           child.stdout.pause();
