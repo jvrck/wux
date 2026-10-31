@@ -114,4 +114,26 @@ describe("backend signal events", () => {
       await temp.cleanup();
     }
   });
+
+  test("filters digest-mismatched signals, including the state fallback", async () => {
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("backend-digest");
+    const dir = join(temp.stateHome, "wux", "runs", name);
+
+    try {
+      await appendEvent(name, { type: "send", at: "2026-06-08T00:00:01.000Z", inputMessageDigest: "new" });
+      await appendBackendSignal(name, { signal: "turn-complete", at: "2026-06-08T00:00:02.000Z", inputMessageDigest: "old" });
+      expect(await readBackendSignalObservation(name)).toEqual({ lastTurnInputAt: "2026-06-08T00:00:01.000Z", lastTurnInputDigest: "new" });
+
+      await writeFile(join(dir, "events.jsonl"), "", "utf8");
+      await appendEvent(name, { type: "send", at: "2026-06-08T00:00:03.000Z", inputMessageDigest: "new" });
+      await writeFile(join(dir, "state.json"), `${JSON.stringify({ lastSignal: "turn-complete", at: "2026-06-08T00:00:04.000Z", inputMessageDigest: "old" })}\n`, "utf8");
+      expect(await readBackendSignalObservation(name)).toEqual({ lastTurnInputAt: "2026-06-08T00:00:03.000Z", lastTurnInputDigest: "new" });
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
 });
