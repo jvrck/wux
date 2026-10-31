@@ -1,4 +1,5 @@
 import { BUNDLED_SKILLS, type EmbeddedSkill } from "../skills/embedded";
+import { unknownChoice } from "../runtime/choices";
 import { WuxError } from "../runtime/errors";
 
 type Writer = { write(chunk: string): unknown };
@@ -16,6 +17,9 @@ Lists or emits bundled Wux companion skills. show writes the selected SKILL.md
 bytes verbatim to stdout and has no filesystem side effects.
 `;
 
+const SKILLS_COMMANDS = ["list", "show"] as const;
+const HELP_OPTIONS = ["--help", "-h"] as const;
+
 export async function skillsCommand(args: string[], io: SkillsIO): Promise<void> {
   const command = args.shift();
   if (!command || command === "--help" || command === "-h") {
@@ -31,14 +35,14 @@ export async function skillsCommand(args: string[], io: SkillsIO): Promise<void>
       showSkill(args, io);
       return;
     default:
-      if (command.startsWith("-")) throw new WuxError(`unknown option: ${command}`);
-      throw new WuxError(`unknown skills command: ${command}`);
+      if (command.startsWith("-")) throw new WuxError(unknownChoice("option", command, HELP_OPTIONS, "wux skills"));
+      throw new WuxError(unknownChoice("skills command", command, SKILLS_COMMANDS, "wux skills"));
   }
 }
 
 function listSkills(args: string[], io: SkillsIO): void {
   const json = takeFlag(args, "--json");
-  rejectUnknownOptions(args);
+  rejectUnknownOptions(args, ["--json", ...HELP_OPTIONS]);
   rejectUnexpectedArgs(args);
 
   const names = BUNDLED_SKILLS.map((skill) => skill.name);
@@ -48,7 +52,7 @@ function listSkills(args: string[], io: SkillsIO): void {
 function showSkill(args: string[], io: SkillsIO): void {
   const name = args.shift();
   if (!name || name.startsWith("-")) throw new WuxError("skills show requires <name>");
-  rejectUnknownOptions(args);
+  rejectUnknownOptions(args, HELP_OPTIONS);
   rejectUnexpectedArgs(args);
 
   const skill = findSkill(name);
@@ -67,9 +71,11 @@ function takeFlag(args: string[], flag: string): boolean {
   return true;
 }
 
-function rejectUnknownOptions(args: string[]): void {
+function rejectUnknownOptions(args: string[], choices: readonly string[]): void {
   const unknown = args.find((arg) => arg.startsWith("-"));
-  if (unknown) throw new WuxError(`unknown option: ${unknown}`);
+  if (!unknown) return;
+  if (choices.includes(unknown)) throw new WuxError(`unknown option: ${unknown}`);
+  throw new WuxError(unknownChoice("option", unknown, choices, "wux skills"));
 }
 
 function rejectUnexpectedArgs(args: string[]): void {

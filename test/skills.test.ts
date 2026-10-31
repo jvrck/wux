@@ -90,10 +90,25 @@ describe("skills command", () => {
   });
 
   test("strictly rejects unknown skills subcommands, options, and extra args", async () => {
+    expect(await run(["skills", "--x"])).toMatchObject({
+      code: 1,
+      stdout: "",
+      stderr: "wux: unknown option: --x (options: --help, -h; see 'wux skills --help'); did you mean '-h'?\n",
+    });
     expect(await run(["skills", "bogus"])).toMatchObject({
       code: 1,
       stdout: "",
-      stderr: "wux: unknown skills command: bogus\n",
+      stderr: "wux: unknown skills command: bogus (skills commands: list, show; see 'wux skills --help')\n",
+    });
+    expect(await run(["skills", "list", "--lines"])).toMatchObject({
+      code: 1,
+      stdout: "",
+      stderr: "wux: unknown option: --lines (options: --json, --help, -h; see 'wux skills --help')\n",
+    });
+    expect(await run(["skills", "show", "wux", "--x"])).toMatchObject({
+      code: 1,
+      stdout: "",
+      stderr: "wux: unknown option: --x (options: --help, -h; see 'wux skills --help'); did you mean '-h'?\n",
     });
     expect(await run(["skills", "list", "extra"])).toMatchObject({
       code: 1,

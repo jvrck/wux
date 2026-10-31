@@ -10,6 +10,7 @@ import {
   type RemoteConfig,
 } from "../runtime/config";
 import { WuxError } from "../runtime/errors";
+import { unknownChoice } from "../runtime/choices";
 import { runProcess, type ProcessResult } from "../runtime/process";
 import { forwardTimeoutMs, sshForwardArgs, sshRemoteArgs, type SshRunner } from "../transport/ssh";
 import { VERSION } from "../version";
@@ -70,6 +71,19 @@ export interface DoctorReport {
 const REMOTE_CRITICAL = ["ssh", "wux", "tmux"];
 const LOCAL_CRITICAL = ["wux", "tmux"];
 const GROK_VERSION_TIMEOUT_MS = 5_000;
+const HELP_OPTIONS = ["--help", "-h"] as const;
+const withHelpOptions = (options: readonly string[]): readonly string[] => [...options, ...HELP_OPTIONS];
+const REMOTES_COMMANDS = ["list", "add", "show", "remove", "default", "clear-default", "doctor"] as const;
+type RemotesCommand = (typeof REMOTES_COMMANDS)[number];
+const REMOTES_OPTIONS: Record<RemotesCommand, readonly string[]> = {
+  list: withHelpOptions(["--json"]),
+  add: withHelpOptions(["--wux-path <path>", "--cwd <path>", "--default"]),
+  show: withHelpOptions(["--json"]),
+  remove: HELP_OPTIONS,
+  default: HELP_OPTIONS,
+  "clear-default": HELP_OPTIONS,
+  doctor: withHelpOptions(["--all", "--json"]),
+};
 
 export async function remotesCommand(args: string[], io: RemotesIO, deps: RemotesDeps = {}): Promise<void> {
   const command = args.shift();
@@ -101,14 +115,14 @@ export async function remotesCommand(args: string[], io: RemotesIO, deps: Remote
       await doctorRemote(args, io, deps);
       return;
     default:
-      if (command.startsWith("-")) throw new WuxError(`unknown option: ${command}`);
-      throw new WuxError(`unknown remotes command: ${command}`);
+      if (command.startsWith("-")) throw new WuxError(unknownChoice("option", command, HELP_OPTIONS, "wux remotes"));
+      throw new WuxError(unknownChoice("remotes command", command, REMOTES_COMMANDS, "wux remotes"));
   }
 }
 
 async function listRemotes(args: string[], io: RemotesIO): Promise<void> {
   const json = takeFlag(args, "--json");
-  rejectUnknownOptions(args);
+  rejectUnknownOptions(args, "list");
   rejectUnexpectedArgs(args);
 
   const config = await loadConfig();
@@ -133,7 +147,7 @@ async function addRemote(args: string[], io: RemotesIO): Promise<void> {
   const wuxPath = takeValue(args, "--wux-path");
   const defaultCwd = takeValue(args, "--cwd");
   const makeDefault = takeFlag(args, "--default");
-  rejectUnknownOptions(args);
+  rejectUnknownOptions(args, "add");
   rejectUnexpectedArgs(args);
 
   const config = await loadConfig();
@@ -150,7 +164,7 @@ async function showRemote(args: string[], io: RemotesIO): Promise<void> {
   const name = args.shift();
   if (!name || name.startsWith("-")) throw new WuxError("remotes show requires <name>");
   const json = takeFlag(args, "--json");
-  rejectUnknownOptions(args);
+  rejectUnknownOptions(args, "show");
   rejectUnexpectedArgs(args);
 
   const config = await loadConfig();
@@ -164,7 +178,7 @@ async function showRemote(args: string[], io: RemotesIO): Promise<void> {
 }
 
 async function removeRemote(args: string[], io: RemotesIO): Promise<void> {
-  const name = parseName(args, "remotes remove");
+  const name = parseName(args, "remove");
   const config = await loadConfig();
   requireRemote(config, name);
   delete config.remotes[name];
@@ -176,7 +190,7 @@ async function removeRemote(args: string[], io: RemotesIO): Promise<void> {
 }
 
 async function setDefaultRemote(args: string[], io: RemotesIO): Promise<void> {
-  const name = parseName(args, "remotes default");
+  const name = parseName(args, "default");
   const config = await loadConfig();
   requireRemote(config, name);
   config.defaultRemote = name;
@@ -185,7 +199,7 @@ async function setDefaultRemote(args: string[], io: RemotesIO): Promise<void> {
 }
 
 async function clearDefaultRemote(args: string[], io: RemotesIO): Promise<void> {
-  rejectUnknownOptions(args);
+  rejectUnknownOptions(args, "clear-default");
   rejectUnexpectedArgs(args);
   const config = await loadConfig();
   delete config.defaultRemote;
@@ -202,7 +216,7 @@ async function doctorRemote(args: string[], io: RemotesIO, deps: RemotesDeps): P
     if (!name || name.startsWith("-")) throw new WuxError("remotes doctor requires <name> (or --all)");
     validateRemoteName(name);
   }
-  rejectUnknownOptions(args);
+  rejectUnknownOptions(args, "doctor");
   rejectUnexpectedArgs(args);
 
   const config = await loadConfig();
@@ -359,11 +373,11 @@ function describeFailure(result: ProcessResult): string {
   return detail.length > 0 ? detail : `exit ${result.code}`;
 }
 
-function parseName(args: string[], command: string): string {
+function parseName(args: string[], command: "remove" | "default"): string {
   const name = args.shift();
-  if (!name || name.startsWith("-")) throw new WuxError(`${command} requires <name>`);
+  if (!name || name.startsWith("-")) throw new WuxError(`remotes ${command} requires <name>`);
   validateRemoteName(name);
-  rejectUnknownOptions(args);
+  rejectUnknownOptions(args, command);
   rejectUnexpectedArgs(args);
   return name;
 }
@@ -417,9 +431,13 @@ function takeValue(args: string[], flag: string): string | undefined {
   return value;
 }
 
-function rejectUnknownOptions(args: string[]): void {
+function rejectUnknownOptions(args: string[], command: RemotesCommand): void {
   const unknown = args.find((arg) => arg.startsWith("-"));
-  if (unknown) throw new WuxError(`unknown option: ${unknown}`);
+  if (!unknown) return;
+  if (REMOTES_OPTIONS[command].some((option) => option.split(" ", 1)[0] === unknown)) {
+    throw new WuxError(`unknown option: ${unknown}`);
+  }
+  throw new WuxError(unknownChoice("option", unknown, REMOTES_OPTIONS[command], "wux remotes"));
 }
 
 function rejectUnexpectedArgs(args: string[]): void {
