@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { basename } from "node:path";
+import { type ByteWriter, waitForWritable } from "./io";
 
 export interface ProcessResult {
   code: number;
@@ -7,13 +8,23 @@ export interface ProcessResult {
   stderr: string;
 }
 
-export function runProcess(args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {}): Promise<ProcessResult> {
+export interface ProcessOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+  // Stream stdout to this writer without accumulating it. Used only for the
+  // binary `read --log` forwarding path; ordinary commands keep capture/replay.
+  stdoutWriter?: ByteWriter;
+}
+
+export function runProcess(args: string[], options: ProcessOptions = {}): Promise<ProcessResult> {
   return new Promise((resolve) => {
     const [command, ...commandArgs] = args;
     const child = spawn(command, commandArgs, { cwd: options.cwd, env: options.env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let outputClosed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const clearTimer = () => {
@@ -23,27 +34,66 @@ export function runProcess(args: string[], options: { cwd?: string; env?: NodeJS
       }
     };
 
-    child.stdout.setEncoding("utf8");
+    const stopOutput = () => {
+      if (outputClosed) return;
+      outputClosed = true;
+      child.stdout.resume();
+      child.kill("SIGTERM");
+    };
+    const onOutputError = () => stopOutput();
+    options.stdoutWriter?.on?.("error", onOutputError);
+    const removeOutputErrorListener = () => options.stdoutWriter?.removeListener?.("error", onOutputError);
+
+    if (!options.stdoutWriter) child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => (stdout += chunk));
+    child.stdout.on("data", (chunk: string | Buffer) => {
+      if (options.stdoutWriter) {
+        if (outputClosed) return;
+        const bytes = Buffer.from(chunk);
+        if (options.stdoutWriter.write(bytes) === false) {
+          child.stdout.pause();
+          void waitForWritable(options.stdoutWriter).then((writable) => {
+            if (settled) return;
+            if (writable) {
+              child.stdout.resume();
+              return;
+            }
+            stopOutput();
+          });
+        }
+      } else {
+        stdout += chunk;
+      }
+    });
     child.stderr.on("data", (chunk) => (stderr += chunk));
     child.on("error", (error) => {
       if (settled) return;
       settled = true;
       clearTimer();
-      resolve({ code: 127, stdout, stderr: error.message });
+      removeOutputErrorListener();
+      resolve({
+        code: outputClosed ? 0 : 127,
+        stdout,
+        stderr: error.message,
+      });
     });
     child.on("close", (code) => {
       if (settled) return;
       settled = true;
       clearTimer();
-      resolve({ code: code ?? 1, stdout, stderr });
+      removeOutputErrorListener();
+      resolve({
+        code: outputClosed ? 0 : code ?? 1,
+        stdout,
+        stderr,
+      });
     });
 
     if (options.timeoutMs !== undefined && options.timeoutMs > 0) {
       timer = setTimeout(() => {
         if (settled) return;
         settled = true;
+        removeOutputErrorListener();
         try {
           child.kill("SIGTERM");
           child.kill("SIGKILL");
@@ -52,7 +102,11 @@ export function runProcess(args: string[], options: { cwd?: string; env?: NodeJS
         }
         const marker = `wux: command timed out after ${options.timeoutMs}ms`;
         const timeoutStderr = stderr.length > 0 ? `${stderr}\n${marker}` : `${marker}\n`;
-        resolve({ code: 124, stdout, stderr: timeoutStderr });
+        resolve({
+          code: 124,
+          stdout,
+          stderr: timeoutStderr,
+        });
       }, options.timeoutMs);
     }
   });

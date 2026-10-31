@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, rmSync } from "node:fs";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ProcessResult, processCommandName, runProcess } from "../src/runtime/process";
@@ -38,6 +39,120 @@ describe("runProcess", () => {
     } finally {
       rmSync(marker, { force: true });
     }
+  });
+
+  test("streams raw stdout chunks with backpressure instead of replaying a collected buffer", async () => {
+    const source = Buffer.allocUnsafe(256 * 1024 + 19);
+    for (let index = 0; index < source.length; index += 1) source[index] = index % 251;
+    source[0] = 0x00;
+    source[128 * 1024 - 1] = 0xff;
+    source[128 * 1024] = 0x00;
+    const program = [
+      "const first = Buffer.allocUnsafe(128 * 1024);",
+      `const second = Buffer.allocUnsafe(${source.length - 128 * 1024});`,
+      "for (let index = 0; index < first.length; index += 1) first[index] = index % 251;",
+      "for (let index = 0; index < second.length; index += 1) second[index] = (index + first.length) % 251;",
+      "first[0] = 0x00; first[first.length - 1] = 0xff; second[0] = 0x00;",
+      "process.stdout.write(first);",
+      "setTimeout(() => { process.stdout.write(second); process.stderr.write('stream stderr\\n'); process.exit(7); }, 20);",
+    ].join("\n");
+    const retained: Uint8Array[] = [];
+    let writesBeforeDrain = 0;
+    let writesBeforeExit = 0;
+
+    const result = await runProcess([process.execPath, "-e", program], {
+      stdoutWriter: {
+        write: (chunk) => {
+          retained.push(chunk);
+          writesBeforeExit += 1;
+          return retained.length === 1 ? false : true;
+        },
+        once: (event, listener) => {
+          if (event !== "drain") return;
+          setTimeout(() => {
+            writesBeforeDrain = retained.length;
+            listener();
+          }, 10);
+        },
+      },
+    });
+
+    expect(result).toMatchObject({ code: 7, stdout: "", stderr: "stream stderr\n" });
+    expect(writesBeforeExit).toBeGreaterThan(1);
+    expect(writesBeforeDrain).toBe(1);
+    expect(Buffer.concat(retained.map((chunk) => Buffer.from(chunk)))).toEqual(source);
+  });
+
+  test("exits cleanly when a downstream writer closes during backpressure", async () => {
+    const events = new EventEmitter();
+    let writes = 0;
+    let writesAfterClose = 0;
+    let closed = false;
+    const outcome = await Promise.race([
+      runProcess([process.execPath, "-e", "process.stdout.write(Buffer.alloc(16 * 1024 * 1024))"], {
+        stdoutWriter: {
+          write: () => {
+            writes += 1;
+            if (closed) writesAfterClose += 1;
+            setTimeout(() => {
+              closed = true;
+              events.emit("close");
+            }, 10);
+            return false;
+          },
+          once: events.once.bind(events),
+          removeListener: events.removeListener.bind(events),
+        },
+      }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("forwarded stdout hung after close")), 500)),
+    ]);
+
+    expect(outcome).toMatchObject({ code: 0, stdout: "" });
+    expect(writes).toBeGreaterThan(0);
+    expect(writesAfterClose).toBe(0);
+  });
+
+  test("continues when an injectable writer reports backpressure without drain events", async () => {
+    const chunks: Uint8Array[] = [];
+    const result = await runProcess([process.execPath, "-e", "process.stdout.write('first'); process.stdout.write('second')"], {
+      stdoutWriter: {
+        write: (chunk) => {
+          chunks.push(chunk);
+          return false;
+        },
+      },
+    });
+
+    expect(result).toMatchObject({ code: 0, stdout: "" });
+    expect(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8")).toBe("firstsecond");
+  });
+
+  test("stops cleanly when output emits EPIPE outside a backpressure wait", async () => {
+    const events = new EventEmitter();
+    let writesAfterError = 0;
+    let errored = false;
+    let scheduled = false;
+    const result = await runProcess([process.execPath, "-e", "process.stdout.write(Buffer.alloc(16 * 1024 * 1024)); setTimeout(() => {}, 1000)"], {
+      stdoutWriter: {
+        write: () => {
+          if (errored) writesAfterError += 1;
+          if (!scheduled) {
+            scheduled = true;
+            setTimeout(() => {
+              errored = true;
+              const error = Object.assign(new Error("broken pipe"), { code: "EPIPE" });
+              events.emit("error", error);
+            }, 10);
+          }
+          return true;
+        },
+        on: events.on.bind(events),
+        removeListener: events.removeListener.bind(events),
+      },
+    });
+
+    expect(result).toMatchObject({ code: 0, stdout: "" });
+    expect(writesAfterError).toBe(0);
   });
 });
 

@@ -10,6 +10,10 @@ intentionally not reproduced here.
 
 ## Unreleased
 
+## 2026.10.31
+
+No breaking changes.
+
 ### Changed
 
 - Unknown commands and unrecognized options now list valid choices and suggest a close spelling without accepting aliases. A repeated valid option keeps its plain `unknown option: <flag>` message.
@@ -17,6 +21,11 @@ intentionally not reproduced here.
 ### Fixed
 
 - Fixed macOS test cleanup to resolve tmux socket parents without resolving Unix sockets directly.
+
+### Added
+
+- Added `wux read --log` to stream persisted raw pane logs, including after a
+  run stops.
 
 ## 2026.10.24
 

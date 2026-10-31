@@ -264,6 +264,101 @@ describe("ssh transport", () => {
     expect(memory.output()).toEqual({ stdout: "remote out\n", stderr: "remote err\n" });
   });
 
+  test("passes injected read-log output through unchanged", async () => {
+    let stdout = "";
+    const code = await forwardSshCommand({
+      host: "worker",
+      args: ["read", "--log", "r"],
+      io: {
+        stdout: { write: (chunk) => (stdout += chunk) },
+        stderr: { write: () => undefined },
+      },
+      runner: async (): Promise<ProcessResult> => ({ code: 0, stdout: "runner output", stderr: "" }),
+    });
+
+    expect(code).toBe(0);
+    expect(stdout).toBe("runner output");
+  });
+
+  test("streams raw read-log bytes, stderr, and exit status through the real process path", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wux-read-log-ssh-"));
+    const fakeSsh = join(dir, "ssh");
+    const previousPath = process.env.PATH;
+    writeFileSync(fakeSsh, "#!/bin/sh\nprintf '\\000\\377raw-log'\nprintf 'remote stderr\\n' >&2\nexit 23\n");
+    chmodSync(fakeSsh, 0o755);
+    process.env.PATH = `${dir}:${previousPath ?? ""}`;
+    const stdout: Buffer[] = [];
+    let stderr = "";
+
+    try {
+      const code = await forwardSshCommand({
+        host: "worker",
+        args: ["read", "--log", "r"],
+        io: {
+          stdout: { write: (chunk) => (stdout.push(Buffer.from(chunk)), true) },
+          stderr: { write: (chunk) => (stderr += Buffer.from(chunk).toString("utf8")) },
+        },
+      });
+
+      expect(code).toBe(23);
+      expect(Buffer.concat(stdout)).toEqual(Buffer.from([0x00, 0xff, ...Buffer.from("raw-log")]));
+      expect(stderr).toBe("remote stderr\n");
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("honors an explicit timeout while streaming a raw read-log", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wux-read-log-timeout-"));
+    const fakeSsh = join(dir, "ssh");
+    const previousPath = process.env.PATH;
+    writeFileSync(fakeSsh, "#!/bin/sh\nsleep 1\n");
+    chmodSync(fakeSsh, 0o755);
+    process.env.PATH = `${dir}:${previousPath ?? ""}`;
+
+    try {
+      const code = await forwardSshCommand({
+        host: "worker",
+        args: ["read", "--log", "r"],
+        io: memoryIO().io,
+        timeoutMs: 10,
+      });
+      expect(code).toBe(124);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("does not treat --log after a terminator as a raw-log stream", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wux-read-log-terminator-"));
+    const fakeSsh = join(dir, "ssh");
+    const previousPath = process.env.PATH;
+    writeFileSync(fakeSsh, "#!/bin/sh\nprintf first\nsleep 0.05\nprintf second\n");
+    chmodSync(fakeSsh, 0o755);
+    process.env.PATH = `${dir}:${previousPath ?? ""}`;
+
+    try {
+      const writes: string[] = [];
+      const code = await forwardSshCommand({
+        host: "worker",
+        args: ["read", "r", "--", "--log"],
+        io: {
+          stdout: { write: (chunk) => writes.push(Buffer.from(chunk).toString("utf8")) },
+          stderr: { write: () => undefined },
+        },
+      });
+      expect(code).toBe(0);
+      expect(writes).toEqual(["firstsecond"]);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
   test("runCli forwards host commands and preserves quoted text arguments", async () => {
     const memory = memoryIO();
     const calls: string[][] = [];

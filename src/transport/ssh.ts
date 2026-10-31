@@ -1,7 +1,8 @@
+import { hasOptionBeforeTerminator } from "../runtime/args";
 import { runInteractiveProcess, runProcess, type ProcessResult } from "../runtime/process";
 import { renderShellCommand } from "../runtime/shell";
 
-type Writer = { write(chunk: string): unknown };
+type Writer = { write(chunk: string | Uint8Array): unknown };
 
 export interface TransportIO {
   stdout: Writer;
@@ -54,9 +55,11 @@ export async function forwardSshCommand(options: SshForwardOptions): Promise<num
     if (result.stderr.length > 0) options.io.stderr.write(result.stderr);
     return result.code;
   }
+  const rawLog = options.args[0] === "read" && hasOptionBeforeTerminator(options.args, "--log");
+  const timeoutMs = rawLog ? options.timeoutMs ?? 0 : options.timeoutMs ?? forwardTimeoutMs();
   const result = options.runner
     ? await options.runner(sshArgs)
-    : await runProcess(sshArgs, { timeoutMs: options.timeoutMs ?? forwardTimeoutMs() });
+    : await runProcess(sshArgs, rawLog ? { stdoutWriter: options.io.stdout, timeoutMs } : { timeoutMs });
   if (result.stdout.length > 0) options.io.stdout.write(result.stdout);
   if (result.stderr.length > 0) options.io.stderr.write(result.stderr);
   return result.code;

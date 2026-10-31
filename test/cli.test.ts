@@ -470,11 +470,28 @@ describe("dispatch", () => {
     expect(calls[0][calls[0].length - 1]).toContain("'read' '--follow' 'run-name' '--poll-interval-ms' '100'");
   });
 
+  test("read --log is operational and forwards over --host with its arguments", async () => {
+    const memory = memoryIO();
+    const calls: string[][] = [];
+    const code = await runCli(["--host", "worker", "read", "--log", "run-name", "--tail", "5"], memory.io, {
+      sshRunner: async (args) => {
+        calls.push(args);
+        return { code: 0, stdout: "", stderr: "" };
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0][calls[0].length - 1]).toContain("'read' '--log' 'run-name' '--tail' '5'");
+  });
+
   test("long-running forwarding is not capped by the generic SSH command timeout", () => {
     expect(__test.forwardTimeoutForCommand("attach")).toBe(0);
     expect(__test.forwardTimeoutForCommand("wait")).toBe(0);
     expect(__test.forwardTimeoutForCommand("read", ["--follow", "run-name"])).toBe(0);
     expect(__test.forwardTimeoutForCommand("read", ["run-name", "--follow"])).toBe(0);
+    expect(__test.forwardTimeoutForCommand("read", ["--log", "run-name"])).toBeUndefined();
+    expect(__test.forwardTimeoutForCommand("read", ["run-name", "--log"])).toBeUndefined();
     expect(__test.forwardTimeoutForCommand("read", ["run-name"])).toBeUndefined();
     expect(__test.forwardTimeoutForCommand("status")).toBeUndefined();
   });
@@ -558,26 +575,27 @@ describe("dispatch", () => {
   });
 
   test("read parsing accepts follow before or after the run name and rejects structured follow", () => {
-    expect(__test.parseReadArgs(["--follow", "r"])).toEqual({ name: "r", json: false, follow: true });
+    expect(__test.parseReadArgs(["--follow", "r"])).toEqual({ name: "r", json: false, log: false, follow: true });
     expect(__test.parseReadArgs(["r", "--follow", "--poll-interval-ms", "100"])).toEqual({
       name: "r",
       json: false,
+      log: false,
       follow: true,
       pollIntervalMs: 100,
     });
-    expect(__test.parseReadArgs(["r", "--tail", "5", "--json"])).toEqual({ name: "r", tail: 5, json: true, follow: false });
+    expect(__test.parseReadArgs(["r", "--tail", "5", "--json"])).toEqual({ name: "r", tail: 5, json: true, log: false, follow: false });
     expect(() => __test.parseReadArgs(["--follow", "--json", "r"])).not.toThrow();
     expect(() => __test.parseReadArgs(["--follow", "r", "--grep", "needle"])).toThrow(
-      "unknown option: --grep (options: --tail <lines>, --json, --follow, --poll-interval-ms <ms>, --help, -h; see 'wux read --help')",
+      "unknown option: --grep (options: --tail <lines>, --json, --log, --follow, --poll-interval-ms <ms>, --help, -h; see 'wux read --help')",
     );
   });
 
   test("read unknown options name valid choices and preserve JSON bad-args errors", async () => {
-    const expected = "unknown option: --lines (options: --tail <lines>, --json, --follow, --poll-interval-ms <ms>, --help, -h; see 'wux read --help')";
+    const expected = "unknown option: --lines (options: --tail <lines>, --json, --log, --follow, --poll-interval-ms <ms>, --help, -h; see 'wux read --help')";
     expect(await run(["--local", "read", "r", "--lines", "5"])).toMatchObject({ code: 1, stderr: `wux: ${expected}\n`, stdout: "" });
     expect(await run(["--local", "read", "r", "--tial", "5"])).toMatchObject({
       code: 1,
-      stderr: "wux: unknown option: --tial (options: --tail <lines>, --json, --follow, --poll-interval-ms <ms>, --help, -h; see 'wux read --help'); did you mean '--tail'?\n",
+      stderr: "wux: unknown option: --tial (options: --tail <lines>, --json, --log, --follow, --poll-interval-ms <ms>, --help, -h; see 'wux read --help'); did you mean '--tail'?\n",
       stdout: "",
     });
     const json = await run(["--local", "read", "r", "--lines", "5", "--json"]);

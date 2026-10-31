@@ -5,7 +5,7 @@ import { interruptCommand } from "./commands/interrupt";
 import { markCommand, type MarkStatus } from "./commands/mark";
 import { mcpCommand } from "./commands/mcp";
 import { pruneCommand } from "./commands/prune";
-import { followRead, readCommand, readRun } from "./commands/read";
+import { followRead, readCommand, readLog, readRun } from "./commands/read";
 import { remotesCommand } from "./commands/remotes";
 import { formatResultEnvelope, resultCommand, resultExitCode, waitResultEnvelope } from "./commands/result";
 import { runCommand, type RunBackend } from "./commands/run";
@@ -16,6 +16,7 @@ import { stopCommand } from "./commands/stop";
 import { upgradeCommand } from "./commands/upgrade";
 import { formatWaitResult, waitCommand, waitExitCode } from "./commands/wait";
 import { runNotifyCli } from "./bin/wux-notify";
+import { hasOptionBeforeTerminator } from "./runtime/args";
 import { loadConfig, remoteWuxHintFromEnv, remoteWuxPath, requireRemote } from "./runtime/config";
 import { unknownChoice } from "./runtime/choices";
 import { WuxError } from "./runtime/errors";
@@ -41,7 +42,7 @@ const withHelpOptions = (options: readonly string[]): readonly string[] => [...o
 const COMMAND_OPTIONS: Record<CommandName, readonly string[]> = {
   run: withHelpOptions(["--name <run-name>", "--cwd <path>", "--owner <owner>", "--json"]),
   send: withHelpOptions(["--force-owner", "--json"]),
-  read: withHelpOptions(["--tail <lines>", "--json", "--follow", "--poll-interval-ms <ms>"]),
+  read: withHelpOptions(["--tail <lines>", "--json", "--log", "--follow", "--poll-interval-ms <ms>"]),
   status: withHelpOptions(["--json"]),
   wait: withHelpOptions(["--idle <duration>", "--timeout <duration>", "--poll-interval-ms <ms>", "--json", "--result"]),
   result: withHelpOptions(["--json"]),
@@ -140,14 +141,18 @@ option-like value. --json prints {name, submission, retried, bytes}.
 `,
   read: `Usage:
   wux read <run-name> [--tail <lines>] [--json]
+  wux read --log <run-name> [--tail <lines>]
   wux read --follow <run-name> [--poll-interval-ms <ms>]
 
 Reads recent run output.
 --json prints a wrapper {name, capturedAt, lines, paneLogPath, runDir}; lines
 are a labelled pane scrape, not structured turn output.
+--log streams the persisted raw pane.log bytes (including ANSI/TUI output) and
+also works after a run stops. It cannot be combined with --json, --follow, or
+--poll-interval-ms.
 --follow streams appended pane.log bytes until interrupted or the tmux session
 ends. It is a raw stream for pipe composition and cannot be combined with
---json or --tail.
+--json, --tail, or --log.
 `,
   status: `Usage:
   wux status [--json]
@@ -486,9 +491,12 @@ async function dispatch(parsed: ParsedGlobal, io: CliIO, deps: CliDeps = {}): Pr
       return;
     }
     case "read": {
-      const { name, tail, json, follow, pollIntervalMs } = parseReadArgs(args);
+      const { name, tail, json, log, follow, pollIntervalMs } = parseReadArgs(args);
       if (follow && json) throw new WuxError("--follow cannot be combined with --json");
       if (follow && tail !== undefined) throw new WuxError("--follow cannot be combined with --tail");
+      if (log && follow) throw new WuxError("--log cannot be combined with --follow");
+      if (log && json) throw new WuxError("--log cannot be combined with --json");
+      if (log && pollIntervalMs !== undefined) throw new WuxError("--log cannot be combined with --poll-interval-ms");
       if (!follow && pollIntervalMs !== undefined) throw new WuxError("--poll-interval-ms requires --follow");
       if (follow) {
         const abort = new AbortController();
@@ -500,6 +508,10 @@ async function dispatch(parsed: ParsedGlobal, io: CliIO, deps: CliDeps = {}): Pr
         } finally {
           process.off("SIGINT", onSigint);
         }
+      }
+      if (log) {
+        await readLog({ name, tail, writer: io.stdout });
+        return;
       }
       if (json) {
         io.stdout.write(`${JSON.stringify(await readCommand({ name, tail }))}\n`);
@@ -755,12 +767,6 @@ function stripGlobalArgsForJsonDetection(rawArgs: string[]): string[] {
   return args;
 }
 
-function hasOptionBeforeTerminator(args: string[], option: string): boolean {
-  const terminatorIndex = args.indexOf("--");
-  const optionArgs = terminatorIndex === -1 ? args : args.slice(0, terminatorIndex);
-  return optionArgs.includes(option);
-}
-
 function errorCode(error: unknown, message: string): string {
   if (!(error instanceof WuxError)) return "internal-error";
   if (message.startsWith("run not found:")) return "run-not-found";
@@ -798,10 +804,11 @@ function peelSendFlags(args: string[], flags: { forceOwner: boolean; json: boole
   }
 }
 
-function parseReadArgs(args: string[]): { name: string; tail?: number; json: boolean; follow: boolean; pollIntervalMs?: number } {
+function parseReadArgs(args: string[]): { name: string; tail?: number; json: boolean; log: boolean; follow: boolean; pollIntervalMs?: number } {
   let name: string | undefined;
   let tail: number | undefined;
   let json = false;
+  let log = false;
   let follow = false;
   let pollIntervalMs: number | undefined;
 
@@ -815,6 +822,11 @@ function parseReadArgs(args: string[]): { name: string; tail?: number; json: boo
     if (arg === "--follow") {
       if (follow) throw new WuxError("unknown option: --follow");
       follow = true;
+      continue;
+    }
+    if (arg === "--log") {
+      if (log) throw new WuxError("unknown option: --log");
+      log = true;
       continue;
     }
     if (arg === "--tail") {
@@ -837,6 +849,7 @@ function parseReadArgs(args: string[]): { name: string; tail?: number; json: boo
     name,
     ...(tail !== undefined ? { tail } : {}),
     json,
+    log,
     follow,
     ...(pollIntervalMs !== undefined ? { pollIntervalMs } : {}),
   };
