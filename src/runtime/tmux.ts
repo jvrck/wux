@@ -641,7 +641,7 @@ function readinessSnapshot(frame: string, text: string, backend?: string): Readi
   const outsideComposer = (line: string, index: number): boolean => index < start || index > end;
   const busy = lines.some((line, index) => outsideComposer(line, index) && BUSY_INDICATOR_RE.test(line));
   const queueable = backend === "codex" && lines.some((line, index) =>
-    outsideComposer(line, index) && BUSY_INDICATOR_RE.test(line) && QUEUEABLE_INDICATOR_RE.test(line),
+    index > end && QUEUEABLE_INDICATOR_RE.test(line),
   );
   // A complete pane comparison is too strict: idle Ink UIs redraw their boxed
   // banner and footer/status chrome. Ignore only those recognised regions; output

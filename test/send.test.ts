@@ -420,6 +420,46 @@ describe("sendLiteral readiness-gated path", () => {
     expect(enterCount(sent)).toBe(1);
   });
 
+  test("does not treat queue text in the Codex composer as queueable", async () => {
+    const sent: string[][] = [];
+    const busy = "› queued instruction tab to queue\n  Working · esc to interrupt";
+    const frames = ["› ", busy, busy, busy, busy];
+    const result = await sendLiteral("wux_x", "queued instruction tab to queue", {
+      backend: "codex",
+      runner: recordingRunner(sent),
+      capture: frameCapture(frames),
+      ...FAST_GATE,
+    });
+    expect(result.enter).toBe("withheld-busy");
+  });
+
+  test("does not treat queue text above the Codex composer as queueable", async () => {
+    const sent: string[][] = [];
+    const busy = "● Earlier output: tab to queue\n• Working · esc to interrupt\n› queued instruction";
+    const frames = ["› ", busy, busy, busy, busy];
+    const result = await sendLiteral("wux_x", "queued instruction", {
+      backend: "codex",
+      runner: recordingRunner(sent),
+      capture: frameCapture(frames),
+      ...FAST_GATE,
+    });
+    expect(result.enter).toBe("withheld-busy");
+  });
+
+  test("does not let a queueable footer without a busy indicator withhold Enter", async () => {
+    const sent: string[][] = [];
+    const idle = "› queued instruction\n  tab to queue message";
+    const submitted = "• Working\n› ";
+    const frames = ["› ", idle, idle, idle, submitted];
+    const result = await sendLiteral("wux_x", "queued instruction", {
+      backend: "codex",
+      runner: recordingRunner(sent),
+      capture: frameCapture(frames),
+      ...FAST_GATE,
+    });
+    expect(result).toEqual({ submission: "submitted", enter: "sent", resend: "not-needed", retried: false });
+  });
+
   test("never reports a Claude pane as queueable", async () => {
     const sent: string[][] = [];
     const busy = "❯ queued instruction\n  Working · esc to interrupt · tab to queue";

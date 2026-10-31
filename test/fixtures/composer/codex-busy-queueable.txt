@@ -1,3 +1,6 @@
+• Working (1s · esc to interrupt)
+
 › queued instruction
 
-• Working (5s · esc to interrupt · tab to queue)
+  generic model · workspace
+  tab to queue message

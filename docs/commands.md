@@ -147,7 +147,7 @@ post-turn redraw race, not a multi-second turn. A send into a pane that stays
 genuinely busy returns an honest non-`submitted` verdict rather than a silent
 strand; gate completion on `wait` plus ground truth, never on the `send` verdict.
 
-When a busy Codex pane displays `tab to queue`, `enter` is
+When a busy Codex pane displays `tab to queue` in its footer, `enter` is
 `withheld-busy-queueable`. Wux deliberately does not send Tab. To queue, wait for
 the pane to settle and resend, or attach with `wux attach <run>` and press Tab
 yourself.
