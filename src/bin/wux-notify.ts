@@ -2,7 +2,7 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { appendBackendSignal, type BackendSignal } from "../runtime/events";
+import { appendBackendSignal, inputMessageDigest, readCurrentTurnInput, type BackendSignal } from "../runtime/events";
 import { loadRun } from "../runtime/runs";
 import { runDir } from "../runtime/state";
 
@@ -44,8 +44,9 @@ export async function runNotifyCli(args: string[], options: NotifyCliOptions = {
     if (meta?.backend === "grok" && !parsedArgs.explicitSignal) {
       throw new Error("grok notifications require an explicit signal");
     }
+    const provenance = payloadProvenance(payload);
     await appendBackendSignal(runName, {
-      signal: parsedArgs.signal ?? signalFromPayload(payload) ?? "turn-complete",
+      signal: await resolveSignal(runName, meta?.backend, parsedArgs, provenance),
       turnId: firstStringField(payload, ["turnId", "turn_id", "turn-id"]),
       lastAssistantMessage: firstStringField(payload, [
         "lastAssistantMessage",
@@ -55,6 +56,7 @@ export async function runNotifyCli(args: string[], options: NotifyCliOptions = {
         "last_agent_message",
         "last-agent-message",
       ]),
+      ...provenance,
     });
     return 0;
   } catch (error) {
@@ -64,11 +66,11 @@ export async function runNotifyCli(args: string[], options: NotifyCliOptions = {
   }
 }
 
-function parseNotifyArgs(args: string[]): { signal?: BackendSignal; payload?: unknown; explicitSignal?: boolean; error?: boolean } {
+function parseNotifyArgs(args: string[]): { signal?: BackendSignal; legacySignal?: BackendSignal; payload?: unknown; explicitSignal?: boolean; error?: boolean } {
   const first = args[0];
   // Keep the pre-Grok contract: a bare helper invocation means completion,
   // regardless of any hook payload supplied on stdin.
-  if (first === undefined) return { signal: "turn-complete", explicitSignal: false };
+  if (first === undefined) return { legacySignal: "turn-complete", explicitSignal: false };
   const signal = normalizeSignal(first);
   if (signal) return { signal, explicitSignal: true };
   const payload = parsePayload(first);
@@ -105,42 +107,43 @@ function stringField(payload: unknown, field: string): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function signalFromPayload(payload: unknown): BackendSignal | undefined {
-  const text = payloadSignalText(payload);
-  if (!text) return undefined;
-  const normalized = text.replaceAll(/[-\s]+/g, "_");
-  if (normalized.includes("approval") || normalized.includes("permission") || normalized.includes("user_input")) {
-    return "awaiting-approval";
-  }
-  if (
-    normalized.includes("turn_complete") ||
-    normalized.includes("turncomplete") ||
-    normalized.includes("task_complete") ||
-    normalized.includes("taskcomplete") ||
-    normalized.includes("stop")
-  ) {
-    return "turn-complete";
-  }
-  return undefined;
+interface PayloadProvenance {
+  payloadType?: string;
+  threadId?: string;
+  client?: string;
+  inputMessagesCount?: number;
+  inputMessageDigest?: string;
 }
 
-function payloadSignalText(payload: unknown): string {
-  if (payload === null || typeof payload !== "object") return "";
+function payloadProvenance(payload: unknown): PayloadProvenance {
+  if (payload === null || typeof payload !== "object") return {};
   const record = payload as Record<string, unknown>;
-  return [
-    record.type,
-    record.event,
-    record.eventName,
-    record.event_name,
-    record["event-name"],
-    record.hookEventName,
-    record.hook_event_name,
-    record["hook-event-name"],
-    record.status,
-  ]
-    .filter((value): value is string => typeof value === "string")
-    .join(" ")
-    .toLowerCase();
+  const messages = record["input-messages"];
+  const strings = Array.isArray(messages) && messages.every((message): message is string => typeof message === "string") ? messages : undefined;
+  return {
+    ...(typeof record.type === "string" ? { payloadType: record.type } : {}),
+    ...(typeof record["thread-id"] === "string" ? { threadId: record["thread-id"] } : {}),
+    ...(typeof record.client === "string" ? { client: record.client } : {}),
+    ...(Array.isArray(messages) ? { inputMessagesCount: messages.length } : {}),
+    ...(strings !== undefined && strings.length > 0 ? { inputMessageDigest: inputMessageDigest(strings.at(-1)!) } : {}),
+  };
+}
+
+async function resolveSignal(
+  runName: string,
+  backend: string | undefined,
+  args: ReturnType<typeof parseNotifyArgs>,
+  provenance: PayloadProvenance,
+): Promise<BackendSignal | undefined> {
+  if (args.explicitSignal) return args.signal;
+  // Claude's Stop hook deliberately invokes the helper without a payload. Keep
+  // that established explicit hook path intact; Codex must prove correlation.
+  if (args.legacySignal !== undefined && backend !== "codex") return args.legacySignal;
+  if (backend !== "codex" || provenance.payloadType !== "agent-turn-complete" || provenance.inputMessageDigest === undefined) {
+    return undefined;
+  }
+  const current = await readCurrentTurnInput(runName);
+  return current.inputMessageDigest === provenance.inputMessageDigest ? "turn-complete" : undefined;
 }
 
 async function readStdin(): Promise<string> {

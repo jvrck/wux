@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runCli } from "../src/cli";
 import { runNotifyCli } from "../src/bin/wux-notify";
-import { readLatestBackendSignal } from "../src/runtime/events";
+import { appendEvent, inputMessageDigest, readEvents, readLatestBackendSignal } from "../src/runtime/events";
 import { saveRun } from "../src/runtime/runs";
 import { tempState } from "./helpers";
 
@@ -12,7 +12,7 @@ function uniqueRunName(prefix: string): string {
 }
 
 describe("wux-notify", () => {
-  test("bare calls keep the legacy turn-complete signal for wired backends", async () => {
+  test("bare Claude calls stay explicit while bare Codex calls do not complete", async () => {
     const temp = await tempState();
     const old = process.env.XDG_STATE_HOME;
     process.env.XDG_STATE_HOME = temp.stateHome;
@@ -25,7 +25,12 @@ describe("wux-notify", () => {
           stderr: { write: () => undefined },
         });
         expect(code).toBe(0);
-        expect(await readLatestBackendSignal(name)).toMatchObject({ signal: "turn-complete", turnId: `${backend}-turn` });
+        if (backend === "claude") {
+          expect(await readLatestBackendSignal(name)).toMatchObject({ signal: "turn-complete", turnId: `${backend}-turn` });
+        } else {
+          expect(await readLatestBackendSignal(name)).toBeUndefined();
+          expect(await readEvents(name)).toContainEqual(expect.objectContaining({ type: "backend-signal", payloadType: "permission-request" }));
+        }
       }
     } finally {
       process.env.XDG_STATE_HOME = old;
@@ -103,14 +108,18 @@ describe("wux-notify", () => {
     const old = process.env.XDG_STATE_HOME;
     process.env.XDG_STATE_HOME = temp.stateHome;
     const name = uniqueRunName("notify-codex");
+    const text = "codex final prompt";
 
     try {
+      await saveRun({ name, backend: "codex", tmuxSession: `wux_${name}`, cwd: "/tmp", owner: "tester@host", createdAt: new Date().toISOString(), status: "running" });
+      await appendEvent(name, { type: "send", inputMessageDigest: inputMessageDigest(text) });
       const code = await runNotifyCli(
         [
           name,
           JSON.stringify({
             type: "agent-turn-complete",
             "turn-id": "codex-turn-1",
+            "input-messages": [text],
             "last-assistant-message": "codex final",
           }),
         ],
@@ -124,6 +133,8 @@ describe("wux-notify", () => {
         signal: "turn-complete",
         turnId: "codex-turn-1",
         lastAssistantMessage: "codex final",
+        payloadType: "agent-turn-complete",
+        inputMessageDigest: inputMessageDigest(text),
       });
     } finally {
       process.env.XDG_STATE_HOME = old;
@@ -136,18 +147,22 @@ describe("wux-notify", () => {
     const old = process.env.XDG_STATE_HOME;
     process.env.XDG_STATE_HOME = temp.stateHome;
     const name = uniqueRunName("notify-cli-codex");
+    const text = "cli final prompt";
     let stdout = "";
     let stderr = "";
 
     try {
+      await saveRun({ name, backend: "codex", tmuxSession: `wux_${name}`, cwd: "/tmp", owner: "tester@host", createdAt: new Date().toISOString(), status: "running" });
+      await appendEvent(name, { type: "send", inputMessageDigest: inputMessageDigest(text) });
       const code = await runCli(
         [
           "notify",
           name,
           JSON.stringify({
-            type: "TurnComplete",
-            turn_id: "codex-turn-2",
-            lastAssistantMessage: "cli final",
+            type: "agent-turn-complete",
+            "turn-id": "codex-turn-2",
+            "input-messages": [text],
+            "last-assistant-message": "cli final",
           }),
         ],
         {
@@ -172,7 +187,7 @@ describe("wux-notify", () => {
     }
   });
 
-  test("maps approval payloads to awaiting-approval", async () => {
+  test("records unrecognised payloads without making them completion signals", async () => {
     const temp = await tempState();
     const old = process.env.XDG_STATE_HOME;
     process.env.XDG_STATE_HOME = temp.stateHome;
@@ -184,11 +199,40 @@ describe("wux-notify", () => {
       });
 
       expect(code).toBe(0);
-      expect(await readLatestBackendSignal(name)).toMatchObject({
-        type: "backend-signal",
-        run: name,
-        signal: "awaiting-approval",
-      });
+      expect(await readLatestBackendSignal(name)).toBeUndefined();
+      expect(await readEvents(name)).toContainEqual(expect.objectContaining({ type: "backend-signal", run: name, payloadType: "permission-request" }));
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("does not complete on a title payload before the matching real turn", async () => {
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("notify-codex-title");
+    const text = "Reply W4_REAL_REPLY";
+    try {
+      await saveRun({ name, backend: "codex", tmuxSession: `wux_${name}`, cwd: "/tmp", owner: "tester@host", createdAt: new Date().toISOString(), status: "running" });
+      await appendEvent(name, { type: "send", inputMessageDigest: inputMessageDigest(text) });
+      const title = {
+        type: "agent-turn-complete",
+        "turn-id": "title-turn",
+        "input-messages": [`Generate a concise title.\n\nUser prompt:\n${text}`],
+        "last-assistant-message": '{"title":"Reply"}',
+      };
+      const real = {
+        type: "agent-turn-complete",
+        "turn-id": "real-turn",
+        "input-messages": ["prior turn", text],
+        "last-assistant-message": "W4_REAL_REPLY",
+      };
+
+      expect(await runNotifyCli([name, JSON.stringify(title)], { stderr: { write: () => undefined } })).toBe(0);
+      expect(await readLatestBackendSignal(name)).toBeUndefined();
+      expect(await runNotifyCli([name, JSON.stringify(real)], { stderr: { write: () => undefined } })).toBe(0);
+      expect(await readLatestBackendSignal(name)).toMatchObject({ signal: "turn-complete", turnId: "real-turn", lastAssistantMessage: "W4_REAL_REPLY" });
     } finally {
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();

@@ -1,4 +1,4 @@
-import { appendEvent } from "../runtime/events";
+import { appendEvent, inputMessageDigest } from "../runtime/events";
 import { currentOwner } from "../runtime/owner";
 import { assertOwner, requireLiveRun } from "../runtime/runs";
 import { capturePane, connectionForMeta, sendLiteral, type Submission } from "../runtime/tmux";
@@ -29,6 +29,13 @@ export async function sendCommand(options: SendOptions): Promise<SendResult> {
     capture: (session, tail) => capturePane(session, tail, connection),
   });
   const bytes = Buffer.byteLength(options.text);
-  await appendEvent(meta.name, { type: "send", bytes, submission: submit.submission, retried: submit.retried, by: options.actor ?? currentOwner() });
+  await appendEvent(meta.name, {
+    type: "send",
+    bytes,
+    submission: submit.submission,
+    retried: submit.retried,
+    inputMessageDigest: inputMessageDigest(options.text),
+    by: options.actor ?? currentOwner(),
+  });
   return { name: meta.name, bytes, submission: submit.submission, retried: submit.retried };
 }
