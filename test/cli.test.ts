@@ -48,6 +48,8 @@ describe("help", () => {
     expect(commandHelp("send")).toContain("<run-name>");
     // --json is only recognized before the literal text; the usage must reflect that.
     expect(commandHelp("send")).toContain("[--json] <text>");
+    expect(commandHelp("send")).toContain("wux never sends Tab");
+    expect(commandHelp("send")).toContain("wux attach <run>");
     expect(commandHelp("read")).toContain("--json");
     expect(commandHelp("read")).toContain("--follow");
     expect(commandHelp("status")).toContain("--json");
@@ -605,20 +607,22 @@ describe("dispatch", () => {
   });
 
   test("renderSendResult routes verdicts to stdout success, stderr warning, or json", () => {
-    const base = { name: "r", bytes: 5 } as const;
+    const base = { name: "r", bytes: 5, enter: "sent", resend: "not-needed" } as const;
     expect(__test.renderSendResult({ ...base, submission: "submitted", retried: false }, false)).toEqual({
-      stdout: "sent 5 bytes to r (submitted)\n",
+      stdout: "sent 5 bytes to r (submitted; Enter sent; resend not needed)\n",
     });
-    const warn = __test.renderSendResult({ ...base, submission: "not-submitted", retried: true }, false);
+    const warn = __test.renderSendResult({ ...base, submission: "not-submitted", resend: "sent", retried: true }, false);
     expect(warn.stdout).toBeUndefined();
     expect(warn.stderr).toContain("warning");
     expect(warn.stderr).toContain("not-submitted");
-    expect(warn.stderr).toContain("retried");
+    expect(warn.stderr).toContain("resend sent");
     const uncertain = __test.renderSendResult({ ...base, submission: "uncertain", retried: false }, false);
     expect(uncertain.stdout).toBeUndefined();
     expect(uncertain.stderr).toContain("uncertain");
-    const json = __test.renderSendResult({ ...base, submission: "not-submitted", retried: true }, true);
+    const queueable = __test.renderSendResult({ ...base, submission: "not-submitted", enter: "withheld-busy-queueable", resend: "skipped-busy", retried: false }, false);
+    expect(queueable.stderr).toContain("Tab can queue");
+    const json = __test.renderSendResult({ ...base, submission: "not-submitted", resend: "sent", retried: true }, true);
     expect(json.stderr).toBeUndefined();
-    expect(JSON.parse(json.stdout as string)).toEqual({ name: "r", submission: "not-submitted", retried: true, bytes: 5 });
+    expect(JSON.parse(json.stdout as string)).toEqual({ name: "r", submission: "not-submitted", enter: "sent", resend: "sent", retried: true, bytes: 5 });
   });
 });
