@@ -586,16 +586,16 @@ describe("dispatch", () => {
     expect(__test.parseReadArgs(["r", "--tail", "5", "--json"])).toEqual({ name: "r", tail: 5, json: true, log: false, follow: false });
     expect(() => __test.parseReadArgs(["--follow", "--json", "r"])).not.toThrow();
     expect(() => __test.parseReadArgs(["--follow", "r", "--grep", "needle"])).toThrow(
-      "unknown option: --grep (options: --tail <lines>, --json, --follow, --poll-interval-ms <ms>, --help, -h; see 'wux read --help')",
+      "unknown option: --grep (options: --tail <lines>, --json, --log, --follow, --poll-interval-ms <ms>, --help, -h; see 'wux read --help')",
     );
   });
 
   test("read unknown options name valid choices and preserve JSON bad-args errors", async () => {
-    const expected = "unknown option: --lines (options: --tail <lines>, --json, --follow, --poll-interval-ms <ms>, --help, -h; see 'wux read --help')";
+    const expected = "unknown option: --lines (options: --tail <lines>, --json, --log, --follow, --poll-interval-ms <ms>, --help, -h; see 'wux read --help')";
     expect(await run(["--local", "read", "r", "--lines", "5"])).toMatchObject({ code: 1, stderr: `wux: ${expected}\n`, stdout: "" });
     expect(await run(["--local", "read", "r", "--tial", "5"])).toMatchObject({
       code: 1,
-      stderr: "wux: unknown option: --tial (options: --tail <lines>, --json, --follow, --poll-interval-ms <ms>, --help, -h; see 'wux read --help'); did you mean '--tail'?\n",
+      stderr: "wux: unknown option: --tial (options: --tail <lines>, --json, --log, --follow, --poll-interval-ms <ms>, --help, -h; see 'wux read --help'); did you mean '--tail'?\n",
       stdout: "",
     });
     const json = await run(["--local", "read", "r", "--lines", "5", "--json"]);

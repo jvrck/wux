@@ -10,6 +10,10 @@ intentionally not reproduced here.
 
 ## Unreleased
 
+## 2026.10.31
+
+No breaking changes.
+
 ### Changed
 
 - Unknown commands and unrecognized options now list valid choices and suggest a close spelling without accepting aliases. A repeated valid option keeps its plain `unknown option: <flag>` message.

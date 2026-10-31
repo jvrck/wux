@@ -1,30 +1,20 @@
 import { spawn } from "node:child_process";
 import { basename } from "node:path";
+import { type ByteWriter, waitForWritable } from "./io";
 
 export interface ProcessResult {
   code: number;
   stdout: string;
-  // Present only for callers that need stdout byte fidelity (for example,
-  // forwarding `wux read --log` over SSH). Other process users retain the
-  // established decoded-text contract.
-  stdoutBytes?: Uint8Array;
   stderr: string;
-}
-
-export interface ProcessStdoutWriter {
-  write(chunk: Uint8Array): unknown;
-  once?: (event: "drain" | "close" | "error", listener: () => void) => unknown;
-  removeListener?: (event: "drain" | "close" | "error", listener: () => void) => unknown;
 }
 
 export interface ProcessOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
-  rawStdout?: boolean;
   // Stream stdout to this writer without accumulating it. Used only for the
   // binary `read --log` forwarding path; ordinary commands keep capture/replay.
-  stdoutWriter?: ProcessStdoutWriter;
+  stdoutWriter?: ByteWriter;
 }
 
 export function runProcess(args: string[], options: ProcessOptions = {}): Promise<ProcessResult> {
@@ -32,9 +22,9 @@ export function runProcess(args: string[], options: ProcessOptions = {}): Promis
     const [command, ...commandArgs] = args;
     const child = spawn(command, commandArgs, { cwd: options.cwd, env: options.env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
-    const stdoutChunks: Buffer[] = [];
     let stderr = "";
     let settled = false;
+    let outputClosed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const clearTimer = () => {
@@ -44,7 +34,7 @@ export function runProcess(args: string[], options: ProcessOptions = {}): Promis
       }
     };
 
-    if (!options.rawStdout && !options.stdoutWriter) child.stdout.setEncoding("utf8");
+    if (!options.stdoutWriter) child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string | Buffer) => {
       if (options.stdoutWriter) {
@@ -52,11 +42,16 @@ export function runProcess(args: string[], options: ProcessOptions = {}): Promis
         if (options.stdoutWriter.write(bytes) === false) {
           child.stdout.pause();
           void waitForWritable(options.stdoutWriter).then((writable) => {
-            if (writable && !settled) child.stdout.resume();
+            if (settled) return;
+            if (writable) {
+              child.stdout.resume();
+              return;
+            }
+            outputClosed = true;
+            child.stdout.resume();
+            child.kill("SIGTERM");
           });
         }
-      } else if (options.rawStdout) {
-        stdoutChunks.push(Buffer.from(chunk));
       } else {
         stdout += chunk;
       }
@@ -67,9 +62,8 @@ export function runProcess(args: string[], options: ProcessOptions = {}): Promis
       settled = true;
       clearTimer();
       resolve({
-        code: 127,
+        code: outputClosed ? 0 : 127,
         stdout,
-        ...(options.rawStdout ? { stdoutBytes: Buffer.concat(stdoutChunks) } : {}),
         stderr: error.message,
       });
     });
@@ -78,9 +72,8 @@ export function runProcess(args: string[], options: ProcessOptions = {}): Promis
       settled = true;
       clearTimer();
       resolve({
-        code: code ?? 1,
+        code: outputClosed ? 0 : code ?? 1,
         stdout,
-        ...(options.rawStdout ? { stdoutBytes: Buffer.concat(stdoutChunks) } : {}),
         stderr,
       });
     });
@@ -100,32 +93,10 @@ export function runProcess(args: string[], options: ProcessOptions = {}): Promis
         resolve({
           code: 124,
           stdout,
-          ...(options.rawStdout ? { stdoutBytes: Buffer.concat(stdoutChunks) } : {}),
           stderr: timeoutStderr,
         });
       }, options.timeoutMs);
     }
-  });
-}
-
-function waitForWritable(writer: ProcessStdoutWriter): Promise<boolean> {
-  const once = writer.once;
-  if (!once) return Promise.resolve(false);
-  return new Promise((resolve) => {
-    let settled = false;
-    const done = (writable: boolean) => {
-      if (settled) return;
-      settled = true;
-      writer.removeListener?.("drain", onDrain);
-      writer.removeListener?.("close", onClose);
-      writer.removeListener?.("error", onClose);
-      resolve(writable);
-    };
-    const onDrain = () => done(true);
-    const onClose = () => done(false);
-    once("drain", onDrain);
-    once("close", onClose);
-    once("error", onClose);
   });
 }
 

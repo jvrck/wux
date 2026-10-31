@@ -5,6 +5,36 @@
 // and keep the JSON-RPC stdout channel clean. This lives below the commands layer
 // so both `commands/` and the MCP server can import it without a cycle.
 
+export interface ByteWriter {
+  write(chunk: Uint8Array): unknown;
+  once?: (event: "drain" | "close" | "error", listener: () => void) => unknown;
+  removeListener?: (event: "drain" | "close" | "error", listener: () => void) => unknown;
+}
+
+// A false write only means a drain event is useful when the writer supports
+// event listeners. Injectable sinks without `once` have no way to signal a
+// closed output, so preserve the historical best-effort streaming behavior.
+export function waitForWritable(writer: ByteWriter): Promise<boolean> {
+  const once = writer.once;
+  if (!once) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (writable: boolean) => {
+      if (settled) return;
+      settled = true;
+      writer.removeListener?.("drain", onDrain);
+      writer.removeListener?.("close", onClose);
+      writer.removeListener?.("error", onClose);
+      resolve(writable);
+    };
+    const onDrain = () => done(true);
+    const onClose = () => done(false);
+    once("drain", onDrain);
+    once("close", onClose);
+    once("error", onClose);
+  });
+}
+
 export interface CliIO {
   stdout: { write(chunk: string | Uint8Array): unknown };
   stderr: { write(chunk: string | Uint8Array): unknown };

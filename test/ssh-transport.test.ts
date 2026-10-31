@@ -264,21 +264,20 @@ describe("ssh transport", () => {
     expect(memory.output()).toEqual({ stdout: "remote out\n", stderr: "remote err\n" });
   });
 
-  test("passes raw read-log bytes from an injected SSH runner unchanged", async () => {
-    const bytes = Buffer.from([0x00, 0xff, 0x1b, 0x5b, 0x6d]);
-    const stdout: Buffer[] = [];
+  test("passes injected read-log output through unchanged", async () => {
+    let stdout = "";
     const code = await forwardSshCommand({
       host: "worker",
       args: ["read", "--log", "r"],
       io: {
-        stdout: { write: (chunk) => stdout.push(Buffer.from(chunk)) },
+        stdout: { write: (chunk) => (stdout += chunk) },
         stderr: { write: () => undefined },
       },
-      runner: async (): Promise<ProcessResult> => ({ code: 0, stdout: "", stdoutBytes: bytes, stderr: "" }),
+      runner: async (): Promise<ProcessResult> => ({ code: 0, stdout: "runner output", stderr: "" }),
     });
 
     expect(code).toBe(0);
-    expect(Buffer.concat(stdout)).toEqual(bytes);
+    expect(stdout).toBe("runner output");
   });
 
   test("streams raw read-log bytes, stderr, and exit status through the real process path", async () => {
@@ -304,6 +303,29 @@ describe("ssh transport", () => {
       expect(code).toBe(23);
       expect(Buffer.concat(stdout)).toEqual(Buffer.from([0x00, 0xff, ...Buffer.from("raw-log")]));
       expect(stderr).toBe("remote stderr\n");
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("does not treat --log after a terminator as a raw-log stream", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "wux-read-log-terminator-"));
+    const fakeSsh = join(dir, "ssh");
+    const previousPath = process.env.PATH;
+    writeFileSync(fakeSsh, "#!/bin/sh\nsleep 1\n");
+    chmodSync(fakeSsh, 0o755);
+    process.env.PATH = `${dir}:${previousPath ?? ""}`;
+
+    try {
+      const code = await forwardSshCommand({
+        host: "worker",
+        args: ["read", "r", "--", "--log"],
+        io: memoryIO().io,
+        timeoutMs: 10,
+      });
+      expect(code).toBe(124);
     } finally {
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;

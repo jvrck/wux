@@ -16,6 +16,7 @@ import { stopCommand } from "./commands/stop";
 import { upgradeCommand } from "./commands/upgrade";
 import { formatWaitResult, waitCommand, waitExitCode } from "./commands/wait";
 import { runNotifyCli } from "./bin/wux-notify";
+import { hasOptionBeforeTerminator } from "./runtime/args";
 import { loadConfig, remoteWuxHintFromEnv, remoteWuxPath, requireRemote } from "./runtime/config";
 import { unknownChoice } from "./runtime/choices";
 import { WuxError } from "./runtime/errors";
@@ -41,7 +42,7 @@ const withHelpOptions = (options: readonly string[]): readonly string[] => [...o
 const COMMAND_OPTIONS: Record<CommandName, readonly string[]> = {
   run: withHelpOptions(["--name <run-name>", "--cwd <path>", "--owner <owner>", "--json"]),
   send: withHelpOptions(["--force-owner", "--json"]),
-  read: withHelpOptions(["--tail <lines>", "--json", "--follow", "--poll-interval-ms <ms>"]),
+  read: withHelpOptions(["--tail <lines>", "--json", "--log", "--follow", "--poll-interval-ms <ms>"]),
   status: withHelpOptions(["--json"]),
   wait: withHelpOptions(["--idle <duration>", "--timeout <duration>", "--poll-interval-ms <ms>", "--json", "--result"]),
   result: withHelpOptions(["--json"]),
@@ -764,12 +765,6 @@ function stripGlobalArgsForJsonDetection(rawArgs: string[]): string[] {
     break;
   }
   return args;
-}
-
-function hasOptionBeforeTerminator(args: string[], option: string): boolean {
-  const terminatorIndex = args.indexOf("--");
-  const optionArgs = terminatorIndex === -1 ? args : args.slice(0, terminatorIndex);
-  return optionArgs.includes(option);
 }
 
 function errorCode(error: unknown, message: string): string {

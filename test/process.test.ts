@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, rmSync } from "node:fs";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ProcessResult, processCommandName, runProcess } from "../src/runtime/process";
@@ -80,6 +81,40 @@ describe("runProcess", () => {
     expect(writesBeforeExit).toBeGreaterThan(1);
     expect(writesBeforeDrain).toBe(1);
     expect(Buffer.concat(retained.map((chunk) => Buffer.from(chunk)))).toEqual(source);
+  });
+
+  test("exits cleanly when a downstream writer closes during backpressure", async () => {
+    const events = new EventEmitter();
+    const outcome = await Promise.race([
+      runProcess([process.execPath, "-e", "process.stdout.write(Buffer.alloc(16 * 1024 * 1024))"], {
+        stdoutWriter: {
+          write: () => {
+            setTimeout(() => events.emit("close"), 10);
+            return false;
+          },
+          once: events.once.bind(events),
+          removeListener: events.removeListener.bind(events),
+        },
+      }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("forwarded stdout hung after close")), 500)),
+    ]);
+
+    expect(outcome).toMatchObject({ code: 0, stdout: "" });
+  });
+
+  test("continues when an injectable writer reports backpressure without drain events", async () => {
+    const chunks: Uint8Array[] = [];
+    const result = await runProcess([process.execPath, "-e", "process.stdout.write('first'); process.stdout.write('second')"], {
+      stdoutWriter: {
+        write: (chunk) => {
+          chunks.push(chunk);
+          return false;
+        },
+      },
+    });
+
+    expect(result).toMatchObject({ code: 0, stdout: "" });
+    expect(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8")).toBe("firstsecond");
   });
 });
 

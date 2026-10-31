@@ -2,6 +2,7 @@ import { open, stat, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { WuxError } from "../runtime/errors";
+import { type ByteWriter, waitForWritable } from "../runtime/io";
 import { loadRun as loadRunMeta, requireLiveRun } from "../runtime/runs";
 import { runDir } from "../runtime/state";
 import { capturePane, connectionForMeta, hasSession as hasTmuxSession } from "../runtime/tmux";
@@ -12,12 +13,6 @@ export interface ReadOptions {
   follow?: boolean;
   intervalMs?: number;
 }
-
-type ByteWriter = {
-  write(chunk: Uint8Array): unknown;
-  once?: (event: "drain" | "close" | "error", listener: () => void) => unknown;
-  removeListener?: (event: "drain" | "close" | "error", listener: () => void) => unknown;
-};
 
 export interface ReadLogOptions {
   name: string;
@@ -179,7 +174,7 @@ async function emitLogBytes(path: string, offset: number, writer: ByteWriter): P
       const chunk = Buffer.allocUnsafe(length);
       const bytesRead = await readRange(handle, chunk, cursor, length);
       if (bytesRead === 0) break;
-      if (writer.write(chunk.subarray(0, bytesRead)) === false && !(await waitForDrain(writer))) return;
+      if (writer.write(chunk.subarray(0, bytesRead)) === false && !(await waitForWritable(writer))) return;
       cursor += bytesRead;
     }
   } finally {
@@ -227,27 +222,6 @@ async function readRange(handle: FileHandle, buffer: Uint8Array, position: numbe
     bytesRead += result.bytesRead;
   }
   return bytesRead;
-}
-
-function waitForDrain(writer: ByteWriter): Promise<boolean> {
-  const once = writer.once;
-  if (!once) return Promise.resolve(false);
-  return new Promise((resolve) => {
-    let settled = false;
-    const done = (writable: boolean) => {
-      if (settled) return;
-      settled = true;
-      writer.removeListener?.("drain", onDrain);
-      writer.removeListener?.("close", onClose);
-      writer.removeListener?.("error", onClose);
-      resolve(writable);
-    };
-    const onDrain = () => done(true);
-    const onClose = () => done(false);
-    once("drain", onDrain);
-    once("close", onClose);
-    once("error", onClose);
-  });
 }
 
 async function fileSize(path: string): Promise<number> {
