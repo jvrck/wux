@@ -15,8 +15,7 @@ export interface ByteWriter {
 // event listeners. Injectable sinks without `once` have no way to signal a
 // closed output, so preserve the historical best-effort streaming behavior.
 export function waitForWritable(writer: ByteWriter): Promise<boolean> {
-  const once = writer.once;
-  if (!once) return Promise.resolve(true);
+  if (!writer.once) return Promise.resolve(true);
   return new Promise((resolve) => {
     let settled = false;
     const done = (writable: boolean) => {
@@ -29,9 +28,9 @@ export function waitForWritable(writer: ByteWriter): Promise<boolean> {
     };
     const onDrain = () => done(true);
     const onClose = () => done(false);
-    once("drain", onDrain);
-    once("close", onClose);
-    once("error", onClose);
+    writer.once?.("drain", onDrain);
+    writer.once?.("close", onClose);
+    writer.once?.("error", onClose);
   });
 }
 
