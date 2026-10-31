@@ -13,7 +13,7 @@ intentionally not reproduced here.
 ### Changed
 
 - Unknown commands and unrecognized options now list valid choices and suggest a close spelling without accepting aliases. A repeated valid option keeps its plain `unknown option: <flag>` message.
-- Codex hook completion now fails closed and is correlated to the latest sent input using Codex's trimmed input form and turn input count. Ambiguous duplicate sends fall back without hook completion; auxiliary title-generation notifications remain diagnosable in `events.jsonl` but cannot settle `wait` or `result`.
+- Codex hook completion now fails closed and is correlated to the latest sent input using Codex's trimmed input form. Ambiguous duplicate sends fall back without hook completion; auxiliary title-generation notifications remain diagnosable in `events.jsonl` but cannot settle `wait` or `result`.
 
 ### Fixed
 

@@ -54,7 +54,6 @@ export interface BackendSignalObservation {
 interface TurnInput {
   at: string | null;
   inputMessageDigest?: string;
-  expectedInputMessagesCount?: number;
   ambiguousDuplicate?: boolean;
 }
 
@@ -287,7 +286,6 @@ function findLastTurnInput(events: RunEvent[]): { index: number; input: TurnInpu
       input: {
         at: typeof event.at === "string" ? event.at : null,
         ...(digest !== undefined ? { inputMessageDigest: digest } : {}),
-        ...(typeof event.expectedInputMessagesCount === "number" ? { expectedInputMessagesCount: event.expectedInputMessagesCount } : {}),
         ...(digest !== undefined && hasAmbiguousDuplicate(events, index, digest) ? { ambiguousDuplicate: true } : {}),
       },
     };

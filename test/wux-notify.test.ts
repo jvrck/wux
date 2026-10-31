@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runCli } from "../src/cli";
 import { runNotifyCli } from "../src/bin/wux-notify";
-import { appendBackendSignal, appendEvent, inputMessageDigest, normalizeCodexInput, readEvents, readLatestBackendSignal } from "../src/runtime/events";
+import { appendEvent, inputMessageDigest, normalizeCodexInput, readEvents, readLatestBackendSignal } from "../src/runtime/events";
 import { saveRun } from "../src/runtime/runs";
 import { tempState } from "./helpers";
 
@@ -270,6 +270,7 @@ describe("wux-notify", () => {
     try {
       await saveRun({ name, backend: "codex", tmuxSession: `wux_${name}`, cwd: "/tmp", owner: "tester@host", createdAt: new Date().toISOString(), status: "running" });
       await appendEvent(name, { type: "send", inputMessageDigest: inputMessageDigest(text) });
+      await runNotifyCli([name, JSON.stringify({ type: "agent-turn-complete", "input-messages": [`Generate title for ${text}`] })], { stderr: { write: () => undefined } });
       await appendEvent(name, { type: "send", inputMessageDigest: inputMessageDigest(text) });
       expect(await runNotifyCli([name, JSON.stringify({ type: "agent-turn-complete", "input-messages": [text] })], { stderr: { write: () => undefined } })).toBe(0);
       expect(await readLatestBackendSignal(name)).toBeUndefined();
@@ -279,21 +280,42 @@ describe("wux-notify", () => {
     }
   });
 
-  test("requires the known next input count for a repeated Codex turn", async () => {
+  test("accepts a normal turn after a missed Codex completion", async () => {
     const temp = await tempState();
     const old = process.env.XDG_STATE_HOME;
     process.env.XDG_STATE_HOME = temp.stateHome;
-    const name = uniqueRunName("notify-codex-count");
-    const text = "continue";
+    const name = uniqueRunName("notify-codex-missed");
+    const missed = "missed turn";
+    const text = "normal turn";
     try {
       await saveRun({ name, backend: "codex", tmuxSession: `wux_${name}`, cwd: "/tmp", owner: "tester@host", createdAt: new Date().toISOString(), status: "running" });
-      await appendBackendSignal(name, { signal: "turn-complete", inputMessagesCount: 1, inputMessageDigest: inputMessageDigest(text) });
-      await appendEvent(name, { type: "send", inputMessageDigest: inputMessageDigest(text), expectedInputMessagesCount: 2 });
-      expect(await runNotifyCli([name, JSON.stringify({ type: "agent-turn-complete", "input-messages": [text] })], { stderr: { write: () => undefined } })).toBe(0);
-      expect((await readEvents(name)).at(-1)).toEqual(expect.objectContaining({ type: "backend-signal" }));
-      expect((await readEvents(name)).at(-1)?.signal).toBeUndefined();
-      expect(await runNotifyCli([name, JSON.stringify({ type: "agent-turn-complete", "input-messages": ["prior", text] })], { stderr: { write: () => undefined } })).toBe(0);
-      expect(await readLatestBackendSignal(name)).toMatchObject({ signal: "turn-complete", inputMessagesCount: 2 });
+      await appendEvent(name, { type: "send", inputMessageDigest: inputMessageDigest(missed) });
+      await appendEvent(name, { type: "send", inputMessageDigest: inputMessageDigest(text) });
+      expect(await runNotifyCli([name, JSON.stringify({ type: "agent-turn-complete", "input-messages": [missed, text] })], { stderr: { write: () => undefined } })).toBe(0);
+      expect(await readLatestBackendSignal(name)).toMatchObject({ signal: "turn-complete", inputMessagesCount: 2, inputMessageDigest: inputMessageDigest(text) });
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("rejects explicit payloadless completion for Codex but retains it elsewhere", async () => {
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const codex = uniqueRunName("notify-codex-explicit");
+    const claude = uniqueRunName("notify-claude-explicit");
+    const noMeta = uniqueRunName("notify-no-meta-explicit");
+    try {
+      for (const [name, backend] of [[codex, "codex"], [claude, "claude"]] as const) {
+        await saveRun({ name, backend, tmuxSession: `wux_${name}`, cwd: "/tmp", owner: "tester@host", createdAt: new Date().toISOString(), status: "running" });
+      }
+      expect(await runNotifyCli([codex, "turn-complete"], { stderr: { write: () => undefined } })).toBe(0);
+      expect(await runNotifyCli([claude, "turn-complete"], { stderr: { write: () => undefined } })).toBe(0);
+      expect(await runNotifyCli([noMeta, "turn-complete"], { stderr: { write: () => undefined } })).toBe(0);
+      expect(await readLatestBackendSignal(codex)).toBeUndefined();
+      expect(await readLatestBackendSignal(claude)).toMatchObject({ signal: "turn-complete" });
+      expect(await readLatestBackendSignal(noMeta)).toMatchObject({ signal: "turn-complete" });
     } finally {
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();

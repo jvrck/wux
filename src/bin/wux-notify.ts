@@ -136,7 +136,12 @@ async function resolveSignal(
   payload: unknown,
   provenance: PayloadProvenance,
 ): Promise<BackendSignal | undefined> {
-  if (args.explicitSignal) return args.signal;
+  if (args.explicitSignal) {
+    // Codex's managed hook always supplies its JSON payload. A payloadless
+    // explicit completion cannot prove a Codex turn and must fail closed.
+    if (backend === "codex" && args.signal === "turn-complete") return undefined;
+    return args.signal;
+  }
   // Claude's Stop hook deliberately invokes the helper without a payload. Keep
   // that established explicit hook path intact; Codex must prove correlation.
   if (backend !== "codex") return args.legacySignal ?? signalFromPayload(payload);
@@ -145,7 +150,6 @@ async function resolveSignal(
   }
   const current = await readCurrentTurnInput(runName);
   if (current.inputMessageDigest !== provenance.inputMessageDigest || current.ambiguousDuplicate) return undefined;
-  if (current.expectedInputMessagesCount !== undefined && current.expectedInputMessagesCount !== provenance.inputMessagesCount) return undefined;
   return "turn-complete";
 }
 

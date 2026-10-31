@@ -195,9 +195,8 @@ wait.
 
 For Codex, hook completion is fail-closed and turn-scoped: only an
 `agent-turn-complete` payload whose final `input-messages` entry matches the
-latest send is accepted. The comparison uses Codex's trimmed input form and, once
-known, the expected input-message count for that turn. An ambiguous repeated send
-without a known predecessor count fails closed. Other payloads, including Codex's
+latest send is accepted. The comparison uses Codex's trimmed input form. An
+ambiguous repeated send before an accepted completion fails closed. Other payloads, including Codex's
 auxiliary title turn, remain in `events.jsonl` with payload type and bounded
 provenance (identifiers, input count, and digest), but never complete `wait` or
 `result`.
