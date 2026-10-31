@@ -614,14 +614,16 @@ interface ReadinessSnapshot {
   stableOffComposer: string;
 }
 
-function bannerRows(lines: string[]): Set<number> {
+function startupBannerRows(lines: string[]): Set<number> {
   const rows = new Set<number>();
-  let inBanner = false;
-  for (const [index, line] of lines.entries()) {
-    const trimmed = line.trimStart();
-    if (trimmed.startsWith("╭")) inBanner = true;
-    if (inBanner) rows.add(index);
-    if (inBanner && trimmed.startsWith("╰")) inBanner = false;
+  const first = lines.findIndex((line) => line.trim().length > 0);
+  if (first === -1 || !lines[first].trimStart().startsWith("╭")) return rows;
+  const last = lines.findIndex((line, index) => index >= first && line.trimStart().startsWith("╰"));
+  if (last === -1) return rows;
+  const banner = lines.slice(first, last + 1).join("\n");
+  if (!/(?:Claude Code|OpenAI Codex)/.test(banner)) return rows;
+  for (let index = first; index <= last; index += 1) {
+    rows.add(index);
   }
   return rows;
 }
@@ -630,19 +632,21 @@ function isStatusLine(line: string, index: number, composerEnd: number): boolean
   return index > composerEnd && /(?:bypass permissions|shift\+tab to cycle|default ·)/i.test(line);
 }
 
-function readinessSnapshot(frame: string, text: string): ReadinessSnapshot | undefined {
+function readinessSnapshot(frame: string, text: string, backend?: string): ReadinessSnapshot | undefined {
   const lines = normalizeReadyFrame(frame).split("\n");
   const anchor = composerTextAnchor(lines.join("\n"), toNeedles(text));
   if (anchor.presence !== "held") return undefined;
   const start = anchor.start ?? -1;
   const end = anchor.end ?? -1;
   const outsideComposer = (line: string, index: number): boolean => index < start || index > end;
-  const busy = lines.some((line, index) => outsideComposer(line, index) && (BUSY_INDICATOR_RE.test(line) || QUEUEABLE_INDICATOR_RE.test(line)));
-  const queueable = lines.some((line, index) => outsideComposer(line, index) && QUEUEABLE_INDICATOR_RE.test(line));
+  const busy = lines.some((line, index) => outsideComposer(line, index) && BUSY_INDICATOR_RE.test(line));
+  const queueable = backend === "codex" && lines.some((line, index) =>
+    outsideComposer(line, index) && BUSY_INDICATOR_RE.test(line) && QUEUEABLE_INDICATOR_RE.test(line),
+  );
   // A complete pane comparison is too strict: idle Ink UIs redraw their boxed
   // banner and footer/status chrome. Ignore only those recognised regions; output
   // elsewhere must remain static before Enter is considered safe.
-  const ignoredBannerRows = bannerRows(lines);
+  const ignoredBannerRows = startupBannerRows(lines);
   const stableOffComposer = lines
     .map((line, index) => (outsideComposer(line, index) && !ignoredBannerRows.has(index) && !isStatusLine(line, index, end) ? line : ""))
     .join("\n");
@@ -658,19 +662,19 @@ function readinessSnapshot(frame: string, text: string): ReadinessSnapshot | und
 // busy; (3) the composer and non-volatile pane output are static — recognised
 // status/banners can redraw while an idle pane is still safe. Pure; tests drive it
 // with fixtures captured off real claude/codex panes.
-export function classifyComposerReady(frames: string[], text: string): ComposerReadiness {
+export function classifyComposerReady(frames: string[], text: string, backend?: string): ComposerReadiness {
   if (frames.length < 2) return "unknown";
   const last = normalizeReadyFrame(frames[frames.length - 1]);
   if (last.trim().length === 0) return "unknown";
   if (toNeedles(text).length === 0) return "unknown";
 
-  const current = readinessSnapshot(last, text);
+  const current = readinessSnapshot(last, text, backend);
   if (!current) return "unknown";
   // Never call a pane ready while its current status row says a turn can be
   // interrupted. The busy anchor is more reliable than incidental redraws.
   if (current.busy) return "busy";
 
-  const previous = readinessSnapshot(frames[frames.length - 2], text);
+  const previous = readinessSnapshot(frames[frames.length - 2], text, backend);
   if (!previous) return "unknown";
   // At-rest Claude/Codex panes redraw recognised banners and status rows between
   // captures. A changing composer, busy anchor, or output area remains
@@ -707,6 +711,11 @@ interface ReadinessProbeOptions {
   sleep: (ms: number) => Promise<void>;
 }
 
+interface ReadinessProbeResult {
+  readiness: ComposerReadiness;
+  queueable: boolean;
+}
+
 // Bounded pre-submit quiescence wait. Sample the pane at a FIXED interval until it
 // is observed at-rest (classifyComposerReady against the sent text) across
 // `stableSamples` consecutive frames, or the small fixed sample budget is spent.
@@ -717,20 +726,26 @@ async function waitForComposerReady(
   probe: () => Promise<string>,
   text: string,
   opts: ReadinessProbeOptions,
-): Promise<ComposerReadiness> {
+  backend?: string,
+): Promise<ReadinessProbeResult> {
   const need = Math.max(1, opts.stableSamples);
   let prev = await probe();
   let consecutiveReady = 0;
   let sawBusy = false;
+  let sawQueueableBusy = false;
   let last: ComposerReadiness = "unknown";
   for (let sample = 1; sample < Math.max(2, opts.maxSamples); sample += 1) {
     await opts.sleep(opts.intervalMs);
     const current = await probe();
-    last = classifyComposerReady([prev, current], text);
+    const previousSnapshot = readinessSnapshot(prev, text, backend);
+    const currentSnapshot = readinessSnapshot(current, text, backend);
+    last = classifyComposerReady([prev, current], text, backend);
     prev = current;
+    if (previousSnapshot?.busy && previousSnapshot.queueable) sawQueueableBusy = true;
+    if (currentSnapshot?.busy && currentSnapshot.queueable) sawQueueableBusy = true;
     if (last === "ready") {
       consecutiveReady += 1;
-      if (consecutiveReady >= need) return "ready";
+      if (consecutiveReady >= need) return { readiness: "ready", queueable: false };
     } else {
       consecutiveReady = 0;
       if (last === "busy") sawBusy = true;
@@ -740,7 +755,7 @@ async function waitForComposerReady(
   // busy, report "busy" so the caller withholds the submit — a later "unknown"
   // sample (the indicator scrolled off, or the text anchor was momentarily lost)
   // must not re-enable a no-op Enter into a still-busy pane.
-  return sawBusy ? "busy" : last;
+  return { readiness: sawBusy ? "busy" : last, queueable: sawBusy && sawQueueableBusy };
 }
 
 export async function sendLiteral(session: string, text: string, options: SendLiteralOptions = {}): Promise<SubmitResult> {
@@ -787,9 +802,9 @@ export async function sendLiteral(session: string, text: string, options: SendLi
   // rendered slowly; the honest verdict catches the outcome); "busy" → withhold the
   // submit and report the honest verdict (the literal is typed/queued — a later
   // idempotent send, or wait-then-send, lands it without losing bytes).
-  let preReady: ComposerReadiness = "ready";
+  let preReady: ReadinessProbeResult = { readiness: "ready", queueable: false };
   if (gated) {
-    preReady = await waitForComposerReady(probe, text, probeOpts);
+    preReady = await waitForComposerReady(probe, text, probeOpts, backend);
     await sleep(settleMs);
   }
 
@@ -798,9 +813,9 @@ export async function sendLiteral(session: string, text: string, options: SendLi
   let resend: ResendDisposition = "not-needed";
   let retried = false;
 
-  if (preReady === "busy") {
+  if (preReady.readiness === "busy") {
     const heldFrame = await probe();
-    enter = readinessSnapshot(heldFrame, text)?.queueable ? "withheld-busy-queueable" : "withheld-busy";
+    enter = preReady.queueable ? "withheld-busy-queueable" : "withheld-busy";
     resend = "skipped-busy";
     submission = classifySubmission(before, heldFrame, text, backend);
   } else {
@@ -816,14 +831,14 @@ export async function sendLiteral(session: string, text: string, options: SendLi
       // re-confirm the pane left busy and resend only then; on the legacy path keep
       // the single blind retry. Always re-read after, so a send that landed late is
       // not reported as a stale not-submitted.
-      const resendReady = gated ? await waitForComposerReady(probe, text, probeOpts) : "ready";
-      const mayResend = resendReady === "ready";
+      const resendReady = gated ? await waitForComposerReady(probe, text, probeOpts, backend) : { readiness: "ready", queueable: false };
+      const mayResend = resendReady.readiness === "ready";
       if (mayResend) {
         await sendKeysOnce(connection, target, session, ["Enter"], "submit text to");
         resend = "sent";
         retried = true;
         await sleep(settleMs);
-      } else if (resendReady === "busy") {
+      } else if (resendReady.readiness === "busy") {
         resend = "skipped-busy";
       } else {
         resend = "skipped-unknown";

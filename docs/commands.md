@@ -128,7 +128,9 @@ wux send smoke --json "printf 'hello from wux\n'"
 `{name, submission, enter, resend, retried, bytes}`. `enter` is `sent`,
 `withheld-busy`, or `withheld-busy-queueable`; `resend` is `sent`,
 `skipped-busy`, `skipped-unknown`, or `not-needed`. `retried` is true exactly
-when `resend` is `sent`.
+when `resend` is `sent`. A withheld Enter is paired with `skipped-busy`;
+`skipped-unknown` means the first Enter was sent but submission could not be
+confirmed, or a stranded send could not re-observe the pane before a resend.
 
 ### Readiness gate (claude/codex)
 

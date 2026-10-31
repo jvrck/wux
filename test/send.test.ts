@@ -405,6 +405,35 @@ describe("sendLiteral readiness-gated path", () => {
     expect(sent.flat()).not.toContain("Tab");
   });
 
+  test("does not mistake a transcript mention of tab to queue for a busy Codex pane", async () => {
+    const sent: string[][] = [];
+    const idle = "● The earlier transcript said tab to queue.\n› queued instruction";
+    const submitted = "● The earlier transcript said tab to queue.\n• Working\n› ";
+    const frames = ["› ", idle, idle, idle, submitted];
+    const result = await sendLiteral("wux_x", "queued instruction", {
+      backend: "codex",
+      runner: recordingRunner(sent),
+      capture: frameCapture(frames),
+      ...FAST_GATE,
+    });
+    expect(result).toEqual({ submission: "submitted", enter: "sent", resend: "not-needed", retried: false });
+    expect(enterCount(sent)).toBe(1);
+  });
+
+  test("never reports a Claude pane as queueable", async () => {
+    const sent: string[][] = [];
+    const busy = "❯ queued instruction\n  Working · esc to interrupt · tab to queue";
+    const frames = ["❯ ", busy, busy, busy, busy];
+    const result = await sendLiteral("wux_x", "queued instruction", {
+      backend: "claude",
+      runner: recordingRunner(sent),
+      capture: frameCapture(frames),
+      ...FAST_GATE,
+    });
+    expect(result).toEqual({ submission: "not-submitted", enter: "withheld-busy", resend: "skipped-busy", retried: false });
+    expect(enterCount(sent)).toBe(0);
+  });
+
   test("reports why a stranded resend is skipped when the pane remains busy", async () => {
     const sent: string[][] = [];
     const strand = "› queued instruction";
@@ -626,6 +655,23 @@ describe("classifyComposerReady", () => {
     const first = "● first streamed output\n❯ please summarize the readme";
     const second = "● second streamed output\n❯ please summarize the readme";
     expect(classifyComposerReady([first, second], "please summarize the readme")).toBe("busy");
+  });
+
+  test("keeps a changing rounded output box out of the ready state", () => {
+    const first = "╭─ result ─╮\n│ first value │\n╰─────────────╯\n❯ please summarize the readme";
+    const second = "╭─ result ─╮\n│ second value │\n╰─────────────╯\n❯ please summarize the readme";
+    expect(classifyComposerReady([first, second], "please summarize the readme")).toBe("busy");
+  });
+
+  test("keeps a changing unclosed rounded output box out of the ready state", () => {
+    const first = "╭─ result ─╮\n│ first value\n❯ please summarize the readme";
+    const second = "╭─ result ─╮\n│ second value\n❯ please summarize the readme";
+    expect(classifyComposerReady([first, second], "please summarize the readme")).toBe("busy");
+  });
+
+  test("an idle transcript mention of tab to queue remains ready", () => {
+    const frame = "● Earlier text: tab to queue\n› summarize the readme please";
+    expect(classifyComposerReady([frame, frame], "summarize the readme please", "codex")).toBe("ready");
   });
 
   test("real fixture: claude at-rest EMPTY (ghost) is not ready for a typed literal", async () => {
