@@ -53,6 +53,14 @@ describe("bufferIO", () => {
     expect(buffer.stdout()).toBe("🚀");
   });
 
+  test("reads a split UTF-8 sequence without resetting the snapshot decoder", () => {
+    const buffer = bufferIO();
+    buffer.io.stdout.write(Buffer.from([0xe2]));
+    expect(buffer.stdout()).toBe("�");
+    buffer.io.stdout.write(Buffer.from([0x82, 0xac]));
+    expect(buffer.stdout()).toBe("€");
+  });
+
   test("treats a writer already closed during backpressure as unwritable", async () => {
     await expect(waitForWritable({ write: () => false, destroyed: true })).resolves.toBe(false);
     await expect(waitForWritable({ write: () => false, writableEnded: true })).resolves.toBe(false);

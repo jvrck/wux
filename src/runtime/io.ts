@@ -5,10 +5,9 @@
 // and keep the JSON-RPC stdout channel clean. This lives below the commands layer
 // so both `commands/` and the MCP server can import it without a cycle.
 
-import { StringDecoder } from "node:string_decoder";
-
 export interface ByteWriter {
   write(chunk: Uint8Array): unknown;
+  on?: (event: "error", listener: (error: unknown) => void) => unknown;
   once?: (event: "drain" | "close" | "error", listener: () => void) => unknown;
   removeListener?: (event: "drain" | "close" | "error", listener: () => void) => unknown;
   destroyed?: boolean;
@@ -53,30 +52,37 @@ export interface BufferedIO {
 
 // An in-memory CliIO that captures everything written, for the MCP layer and tests.
 export function bufferIO(): BufferedIO {
-  const out = bufferedText();
-  const err = bufferedText();
+  const out: Array<string | Uint8Array> = [];
+  const err: Array<string | Uint8Array> = [];
   return {
     io: {
-      stdout: { write: (chunk: string | Uint8Array) => (out.write(chunk), true) },
-      stderr: { write: (chunk: string | Uint8Array) => (err.write(chunk), true) },
+      stdout: { write: (chunk: string | Uint8Array) => (out.push(chunk), true) },
+      stderr: { write: (chunk: string | Uint8Array) => (err.push(chunk), true) },
     },
-    stdout: () => out.text(),
-    stderr: () => err.text(),
+    stdout: () => toText(out),
+    stderr: () => toText(err),
   };
 }
 
-function bufferedText(): { write(chunk: string | Uint8Array): void; text(): string } {
+// Decode a read-only snapshot. Keeping original strings intact preserves a
+// surrogate pair split across writes; grouping adjacent byte chunks preserves a
+// split UTF-8 sequence. No decoder state is mutated by stdout()/stderr().
+function toText(chunks: Array<string | Uint8Array>): string {
   let text = "";
-  const decoder = new StringDecoder("utf8");
-  return {
-    write(chunk) {
-      if (typeof chunk === "string") {
-        text += decoder.end();
-        text += chunk;
-        return;
-      }
-      text += decoder.write(Buffer.from(chunk));
-    },
-    text: () => `${text}${decoder.end()}`,
+  let bytes: Uint8Array[] = [];
+  const flushBytes = () => {
+    if (bytes.length === 0) return;
+    text += Buffer.concat(bytes.map((chunk) => Buffer.from(chunk))).toString("utf8");
+    bytes = [];
   };
+  for (const chunk of chunks) {
+    if (typeof chunk === "string") {
+      flushBytes();
+      text += chunk;
+    } else {
+      bytes.push(chunk);
+    }
+  }
+  flushBytes();
+  return text;
 }

@@ -337,18 +337,22 @@ describe("ssh transport", () => {
     const dir = mkdtempSync(join(tmpdir(), "wux-read-log-terminator-"));
     const fakeSsh = join(dir, "ssh");
     const previousPath = process.env.PATH;
-    writeFileSync(fakeSsh, "#!/bin/sh\nsleep 1\n");
+    writeFileSync(fakeSsh, "#!/bin/sh\nprintf first\nsleep 0.05\nprintf second\n");
     chmodSync(fakeSsh, 0o755);
     process.env.PATH = `${dir}:${previousPath ?? ""}`;
 
     try {
+      const writes: string[] = [];
       const code = await forwardSshCommand({
         host: "worker",
         args: ["read", "r", "--", "--log"],
-        io: memoryIO().io,
-        timeoutMs: 10,
+        io: {
+          stdout: { write: (chunk) => writes.push(Buffer.from(chunk).toString("utf8")) },
+          stderr: { write: () => undefined },
+        },
       });
-      expect(code).toBe(124);
+      expect(code).toBe(0);
+      expect(writes).toEqual(["firstsecond"]);
     } finally {
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;

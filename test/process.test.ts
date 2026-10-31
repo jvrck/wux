@@ -126,6 +126,34 @@ describe("runProcess", () => {
     expect(result).toMatchObject({ code: 0, stdout: "" });
     expect(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8")).toBe("firstsecond");
   });
+
+  test("stops cleanly when output emits EPIPE outside a backpressure wait", async () => {
+    const events = new EventEmitter();
+    let writesAfterError = 0;
+    let errored = false;
+    let scheduled = false;
+    const result = await runProcess([process.execPath, "-e", "process.stdout.write(Buffer.alloc(16 * 1024 * 1024)); setTimeout(() => {}, 1000)"], {
+      stdoutWriter: {
+        write: () => {
+          if (errored) writesAfterError += 1;
+          if (!scheduled) {
+            scheduled = true;
+            setTimeout(() => {
+              errored = true;
+              const error = Object.assign(new Error("broken pipe"), { code: "EPIPE" });
+              events.emit("error", error);
+            }, 10);
+          }
+          return true;
+        },
+        on: events.on.bind(events),
+        removeListener: events.removeListener.bind(events),
+      },
+    });
+
+    expect(result).toMatchObject({ code: 0, stdout: "" });
+    expect(writesAfterError).toBe(0);
+  });
 });
 
 describe("processCommandName", () => {

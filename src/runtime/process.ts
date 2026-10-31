@@ -34,6 +34,16 @@ export function runProcess(args: string[], options: ProcessOptions = {}): Promis
       }
     };
 
+    const stopOutput = () => {
+      if (outputClosed) return;
+      outputClosed = true;
+      child.stdout.resume();
+      child.kill("SIGTERM");
+    };
+    const onOutputError = () => stopOutput();
+    options.stdoutWriter?.on?.("error", onOutputError);
+    const removeOutputErrorListener = () => options.stdoutWriter?.removeListener?.("error", onOutputError);
+
     if (!options.stdoutWriter) child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string | Buffer) => {
@@ -48,9 +58,7 @@ export function runProcess(args: string[], options: ProcessOptions = {}): Promis
               child.stdout.resume();
               return;
             }
-            outputClosed = true;
-            child.stdout.resume();
-            child.kill("SIGTERM");
+            stopOutput();
           });
         }
       } else {
@@ -62,6 +70,7 @@ export function runProcess(args: string[], options: ProcessOptions = {}): Promis
       if (settled) return;
       settled = true;
       clearTimer();
+      removeOutputErrorListener();
       resolve({
         code: outputClosed ? 0 : 127,
         stdout,
@@ -72,6 +81,7 @@ export function runProcess(args: string[], options: ProcessOptions = {}): Promis
       if (settled) return;
       settled = true;
       clearTimer();
+      removeOutputErrorListener();
       resolve({
         code: outputClosed ? 0 : code ?? 1,
         stdout,
@@ -83,6 +93,7 @@ export function runProcess(args: string[], options: ProcessOptions = {}): Promis
       timer = setTimeout(() => {
         if (settled) return;
         settled = true;
+        removeOutputErrorListener();
         try {
           child.kill("SIGTERM");
           child.kill("SIGKILL");
