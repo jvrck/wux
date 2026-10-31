@@ -357,7 +357,7 @@ export async function killSession(session: string, connection: TmuxConnection = 
 // Honest-submit verdict. This is a HEURISTIC over the pane, not an end-of-turn
 // signal: it answers "did the prompt submit", not "did the turn finish".
 export type Submission = "submitted" | "uncertain" | "not-submitted";
-export type EnterDisposition = "sent" | "withheld-busy";
+export type EnterDisposition = "sent" | "withheld-busy" | "withheld-busy-queueable";
 export type ResendDisposition = "sent" | "skipped-busy" | "skipped-unknown" | "not-needed";
 
 export interface SubmitResult {
@@ -419,6 +419,7 @@ const COMPOSER_MARKER_RE = new RegExp(`${COMPOSER_LINE_RE.source}\\s?`);
 // Best-effort, never a single hard-coded spinner; only ever scoped OFF the
 // composer line(s) holding the sent text (see classifyComposerReady).
 const BUSY_INDICATOR_RE = /esc to interrupt/i;
+const QUEUEABLE_INDICATOR_RE = /tab to queue/i;
 
 // Bounded pre-submit readiness gate (claude/codex). The pane is sampled at a
 // FIXED short interval until it is observed at-rest across K consecutive frames,
@@ -609,6 +610,24 @@ function normalizeReadyFrame(frame: string): string {
 interface ReadinessSnapshot {
   composer: string;
   busy: boolean;
+  queueable: boolean;
+  stableOffComposer: string;
+}
+
+function bannerRows(lines: string[]): Set<number> {
+  const rows = new Set<number>();
+  let inBanner = false;
+  for (const [index, line] of lines.entries()) {
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith("╭")) inBanner = true;
+    if (inBanner) rows.add(index);
+    if (inBanner && trimmed.startsWith("╰")) inBanner = false;
+  }
+  return rows;
+}
+
+function isStatusLine(line: string, index: number, composerEnd: number): boolean {
+  return index > composerEnd && /(?:bypass permissions|shift\+tab to cycle|default ·)/i.test(line);
 }
 
 function readinessSnapshot(frame: string, text: string): ReadinessSnapshot | undefined {
@@ -617,8 +636,17 @@ function readinessSnapshot(frame: string, text: string): ReadinessSnapshot | und
   if (anchor.presence !== "held") return undefined;
   const start = anchor.start ?? -1;
   const end = anchor.end ?? -1;
-  const busy = lines.some((line, index) => (index < start || index > end) && BUSY_INDICATOR_RE.test(line));
-  return { composer: lines.slice(start, end + 1).join("\n"), busy };
+  const outsideComposer = (line: string, index: number): boolean => index < start || index > end;
+  const busy = lines.some((line, index) => outsideComposer(line, index) && (BUSY_INDICATOR_RE.test(line) || QUEUEABLE_INDICATOR_RE.test(line)));
+  const queueable = lines.some((line, index) => outsideComposer(line, index) && QUEUEABLE_INDICATOR_RE.test(line));
+  // A complete pane comparison is too strict: idle Ink UIs redraw their boxed
+  // banner and footer/status chrome. Ignore only those recognised regions; output
+  // elsewhere must remain static before Enter is considered safe.
+  const ignoredBannerRows = bannerRows(lines);
+  const stableOffComposer = lines
+    .map((line, index) => (outsideComposer(line, index) && !ignoredBannerRows.has(index) && !isStatusLine(line, index, end) ? line : ""))
+    .join("\n");
+  return { composer: lines.slice(start, end + 1).join("\n"), busy, queueable, stableOffComposer };
 }
 
 // Decide whether the composer is at-rest and safe to submit into, from the two
@@ -627,9 +655,9 @@ function readinessSnapshot(frame: string, text: string): ReadinessSnapshot | und
 // marker presence, so at-rest ghost/placeholder text and the stale post-type
 // redraw frame are never "ready"; (2) no busy indicator OFF the composer line(s)
 // — so typed text or scrollback containing "esc to interrupt" cannot pin a false
-// busy; (3) the composer and busy anchor are static — incidental status/banners
-// can redraw while an idle pane is still safe. Pure; tests drive it with fixtures
-// captured off real claude/codex panes.
+// busy; (3) the composer and non-volatile pane output are static — recognised
+// status/banners can redraw while an idle pane is still safe. Pure; tests drive it
+// with fixtures captured off real claude/codex panes.
 export function classifyComposerReady(frames: string[], text: string): ComposerReadiness {
   if (frames.length < 2) return "unknown";
   const last = normalizeReadyFrame(frames[frames.length - 1]);
@@ -644,10 +672,11 @@ export function classifyComposerReady(frames: string[], text: string): ComposerR
 
   const previous = readinessSnapshot(frames[frames.length - 2], text);
   if (!previous) return "unknown";
-  // Compare the composer and busy anchor only. At-rest Claude/Codex panes redraw
-  // banners, counters, and status rows between captures; those rows do not make
-  // Enter unsafe. A changing composer or busy-anchor state remains conservative.
-  if (previous.busy || previous.composer !== current.composer) return "busy";
+  // At-rest Claude/Codex panes redraw recognised banners and status rows between
+  // captures. A changing composer, busy anchor, or output area remains
+  // conservative: it can still be a turn streaming without a visible interrupt
+  // hint, so it is not safe to submit into.
+  if (previous.busy || previous.composer !== current.composer || previous.stableOffComposer !== current.stableOffComposer) return "busy";
 
   return "ready";
 }
@@ -770,15 +799,18 @@ export async function sendLiteral(session: string, text: string, options: SendLi
   let retried = false;
 
   if (preReady === "busy") {
-    enter = "withheld-busy";
+    const heldFrame = await probe();
+    enter = readinessSnapshot(heldFrame, text)?.queueable ? "withheld-busy-queueable" : "withheld-busy";
     resend = "skipped-busy";
-    submission = classifySubmission(before, await probe(), text, backend);
+    submission = classifySubmission(before, heldFrame, text, backend);
   } else {
     await sendKeysOnce(connection, target, session, ["Enter"], "submit text to");
     await sleep(settleMs);
     submission = classifySubmission(before, await probe(), text, backend);
 
-    if (submission === "not-submitted") {
+    if (submission === "uncertain") {
+      resend = "skipped-unknown";
+    } else if (submission === "not-submitted") {
       // Strand evidence: the sent text is still on a composer line, so the Enter was
       // dropped. A blind resend is a no-op on a still-busy pane: on a gated backend
       // re-confirm the pane left busy and resend only then; on the legacy path keep

@@ -2,7 +2,7 @@
 │ Update available. Run /update when convenient.                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
-● Ready for another task. · 1,024 tokens left
+● Ready for another task.
 
 ────────────────────────────────────────────────────────────────────────────────
 ❯ please summarize the readme

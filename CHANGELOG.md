@@ -12,7 +12,7 @@ intentionally not reproduced here.
 
 ### Changed
 
-- Send results now explain whether the initial Enter was sent or withheld and whether a one-time resend was sent, skipped because the pane was busy, skipped because the pane was unobservable, or not needed.
+- Send results now explain whether the initial Enter was sent, withheld because the pane was busy, or withheld from a queueable Codex pane; they also report whether a one-time resend was sent, skipped because the pane was busy, skipped because the pane was unobservable, or not needed. Wux does not send Tab.
 - Unknown commands and unrecognized options now list valid choices and suggest a close spelling without accepting aliases. A repeated valid option keeps its plain `unknown option: <flag>` message.
 
 ### Fixed

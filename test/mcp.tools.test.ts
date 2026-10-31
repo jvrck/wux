@@ -151,6 +151,13 @@ describe("mcp tools — send payload shaping (unit)", () => {
       expect(payload.warning as string).toContain(submission);
     }
   });
+
+  test("an unreported remote disposition stays null and is named honestly in the warning", () => {
+    const payload = sendPayload(localResolved(), { name: "r", bytes: 3, submission: "not-submitted", enter: null, resend: null, retried: false });
+    expect(payload.enter).toBeNull();
+    expect(payload.resend).toBeNull();
+    expect(payload.warning).toContain("not reported by remote");
+  });
 });
 
 describe("mcp tools — by stamping (unit, real run)", () => {
@@ -376,11 +383,46 @@ describe("mcp tools — remote target forwarding", () => {
     try {
       const sent = await call(harness.client, "send", { name: "r1", text: "hi", target: "work" });
       expect(sent.structured.submission).toBe("submitted");
+      expect(sent.structured.enter).toBe("sent");
+      expect(sent.structured.resend).toBe("not-needed");
       expect(sent.structured.submitted).toBe(true);
       expect((sent.structured.identity as { host: string }).host).toBe("worker");
       // ensureFeature ran a version check before forwarding the mutation
       expect(calls.some((argv) => argv[argv.length - 1].includes("'--version'"))).toBe(true);
       expect(calls.some((argv) => argv[argv.length - 1].includes("'send'"))).toBe(true);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("an older remote envelope keeps its structured verdict and reports missing dispositions", async () => {
+    const harness = await connectRemote(async (args) => {
+      const remoteCmd = args[args.length - 1];
+      if (remoteCmd.includes("'--version'")) return { code: 0, stdout: "2099.01.02\n", stderr: "" };
+      return { code: 0, stdout: `${JSON.stringify({ name: "r1", submission: "submitted", retried: false, bytes: 2 })}\n`, stderr: "" };
+    });
+    try {
+      const sent = await call(harness.client, "send", { name: "r1", text: "hi", target: "work" });
+      expect(sent.structured.submission).toBe("submitted");
+      expect(sent.structured.enter).toBeNull();
+      expect(sent.structured.resend).toBeNull();
+      expect(sent.structured.submitted).toBe(true);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("an unknown remote disposition is reported as unavailable rather than mislabelled", async () => {
+    const harness = await connectRemote(async (args) => {
+      const remoteCmd = args[args.length - 1];
+      if (remoteCmd.includes("'--version'")) return { code: 0, stdout: "2099.01.02\n", stderr: "" };
+      return { code: 0, stdout: `${JSON.stringify({ name: "r1", submission: "not-submitted", enter: "mystery", resend: "later", retried: false, bytes: 2 })}\n`, stderr: "" };
+    });
+    try {
+      const sent = await call(harness.client, "send", { name: "r1", text: "hi", target: "work" });
+      expect(sent.structured.enter).toBeNull();
+      expect(sent.structured.resend).toBeNull();
+      expect(sent.structured.warning).toContain("not reported by remote");
     } finally {
       await harness.close();
     }
@@ -461,6 +503,8 @@ describe("mcp tools — raw-host (allowRawHost) forwarding resolves wux on the r
     });
     try {
       const sent = await call(harness.client, "send", { name: "r1", text: "hi", target: "raw.example" });
+      expect(sent.structured.enter).toBe("sent");
+      expect(sent.structured.resend).toBe("not-needed");
       expect(sent.structured.submitted).toBe(true);
       const versionProbe = calls.find((argv) => argv[argv.length - 1].includes("'--version'"));
       const sendForward = calls.find((argv) => argv[argv.length - 1].includes("'send'"));

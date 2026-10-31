@@ -9,7 +9,7 @@ import { followRead, readCommand, readRun } from "./commands/read";
 import { remotesCommand } from "./commands/remotes";
 import { formatResultEnvelope, resultCommand, resultExitCode, waitResultEnvelope } from "./commands/result";
 import { runCommand, type RunBackend } from "./commands/run";
-import { sendCommand, type SendResult } from "./commands/send";
+import { enterDispositionText, resendDispositionText, sendCommand, type SendResult } from "./commands/send";
 import { skillsCommand } from "./commands/skills";
 import { formatStatusRows, statusCommand, statusJsonCommand } from "./commands/status";
 import { stopCommand } from "./commands/stop";
@@ -136,7 +136,8 @@ Sends literal text plus Enter to a run, then reports whether the backend accepte
 the submit. The verdict (submitted | uncertain | not-submitted) is a heuristic
 over the pane, not an end-of-turn signal. For claude/codex, Enter is held while
 the pane looks busy and resent once only after it is seen at rest again; other
-backends retry Enter once. See docs/commands.md for readiness-gate details.
+non-shell backends retry Enter once. wux never sends Tab: queue only after the
+pane settles and a resend, or attach with wux attach <run> and press Tab.
 Options must precede <text>; use -- before literal text that starts with an
 option-like value. --json prints {name, submission, enter, resend, retried, bytes}.
 `,
@@ -701,14 +702,8 @@ export function renderSendResult(result: SendResult, json: boolean): { stdout?: 
       stdout: `${JSON.stringify({ name: result.name, submission: result.submission, enter: result.enter, resend: result.resend, retried: result.retried, bytes: result.bytes })}\n`,
     };
   }
-  const enter = result.enter === "sent" ? "Enter sent" : "Enter withheld: pane busy";
-  const resend = result.resend === "sent"
-    ? "resend sent"
-    : result.resend === "skipped-busy"
-      ? "resend skipped: pane busy"
-      : result.resend === "skipped-unknown"
-        ? "resend skipped: pane state unknown"
-        : "resend not needed";
+  const enter = enterDispositionText(result.enter);
+  const resend = resendDispositionText(result.resend);
   if (result.submission === "submitted") {
     return { stdout: `sent ${result.bytes} bytes to ${result.name} (submitted; ${enter}; ${resend})\n` };
   }

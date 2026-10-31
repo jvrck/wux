@@ -390,6 +390,21 @@ describe("sendLiteral readiness-gated path", () => {
     expect(enterCount(sent)).toBe(0);
   });
 
+  test("reports a queueable Codex busy pane without sending Tab", async () => {
+    const sent: string[][] = [];
+    const queueable = await readFile(join(import.meta.dir, "fixtures", "composer", "codex-busy-queueable.txt"), "utf8");
+    const frames = ["› ", queueable, queueable, queueable, queueable];
+    const result = await sendLiteral("wux_x", "queued instruction", {
+      backend: "codex",
+      runner: recordingRunner(sent),
+      capture: frameCapture(frames),
+      ...FAST_GATE,
+    });
+    expect(result).toEqual({ submission: "not-submitted", enter: "withheld-busy-queueable", resend: "skipped-busy", retried: false });
+    expect(enterCount(sent)).toBe(0);
+    expect(sent.flat()).not.toContain("Tab");
+  });
+
   test("reports why a stranded resend is skipped when the pane remains busy", async () => {
     const sent: string[][] = [];
     const strand = "› queued instruction";
@@ -536,7 +551,7 @@ describe("sendLiteral legacy/degrade paths", () => {
         throw new Error("pane gone");
       },
     });
-    expect(result).toEqual({ submission: "uncertain", enter: "sent", resend: "not-needed", retried: false });
+    expect(result).toEqual({ submission: "uncertain", enter: "sent", resend: "skipped-unknown", retried: false });
   });
 });
 
@@ -590,7 +605,7 @@ describe("classifyComposerReady", () => {
     expect(classifyComposerReady([frame, frame], "please summarize the readme")).toBe("ready");
   });
 
-  test("real fixtures: idle claude status redraws keep a static composer ready", async () => {
+  test("fixtures: idle claude banner redraws keep a static composer ready", async () => {
     const [first, second] = await Promise.all([composer("claude-atrest-redraw-a"), composer("claude-atrest-redraw-b")]);
     expect(classifyComposerReady([first, second], "please summarize the readme")).toBe("ready");
   });
@@ -599,6 +614,18 @@ describe("classifyComposerReady", () => {
     const idle = await composer("claude-atrest-redraw-b");
     const busy = `${idle}\n  ⏵⏵ bypass permissions on · esc to interrupt`;
     expect(classifyComposerReady([idle, busy], "please summarize the readme")).toBe("busy");
+  });
+
+  test("keeps a previous busy frame busy after the current frame looks idle", () => {
+    const busy = "❯ please summarize the readme\n  esc to interrupt";
+    const idle = "❯ please summarize the readme";
+    expect(classifyComposerReady([busy, idle], "please summarize the readme")).toBe("busy");
+  });
+
+  test("keeps an output-area redraw without an interrupt hint out of the ready state", () => {
+    const first = "● first streamed output\n❯ please summarize the readme";
+    const second = "● second streamed output\n❯ please summarize the readme";
+    expect(classifyComposerReady([first, second], "please summarize the readme")).toBe("busy");
   });
 
   test("real fixture: claude at-rest EMPTY (ghost) is not ready for a typed literal", async () => {
@@ -623,7 +650,7 @@ describe("classifyComposerReady", () => {
     expect(classifyComposerReady([frame, frame], "summarize the readme please")).toBe("ready");
   });
 
-  test("real fixtures: idle codex status redraws keep a static composer ready", async () => {
+  test("fixtures: idle codex banner redraws keep a static composer ready", async () => {
     const [first, second] = await Promise.all([composer("codex-atrest-redraw-a"), composer("codex-atrest-redraw-b")]);
     expect(classifyComposerReady([first, second], "summarize the readme please")).toBe("ready");
   });

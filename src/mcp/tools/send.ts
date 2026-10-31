@@ -1,8 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { sendCommand, type SendResult } from "../../commands/send";
+import { enterDispositionText, resendDispositionText, sendCommand, type ReportedSendResult, type SendResult } from "../../commands/send";
 import { bufferIO } from "../../runtime/io";
-import { tmuxSessionName } from "../../runtime/tmux";
+import { tmuxSessionName, type EnterDisposition, type ResendDisposition } from "../../runtime/tmux";
 import { forwardSshCommand } from "../../transport/ssh";
 import { ensureFeature } from "../capability";
 import { identityFor } from "../target";
@@ -64,7 +64,15 @@ export function register(server: McpServer, ctx: ToolContext): void {
   );
 }
 
-function parseSendResult(stdout: string): SendResult | null {
+function isEnterDisposition(value: unknown): value is EnterDisposition {
+  return value === "sent" || value === "withheld-busy" || value === "withheld-busy-queueable";
+}
+
+function isResendDisposition(value: unknown): value is ResendDisposition {
+  return value === "sent" || value === "skipped-busy" || value === "skipped-unknown" || value === "not-needed";
+}
+
+function parseSendResult(stdout: string): ReportedSendResult | null {
   const trimmed = stdout.trim();
   if (trimmed.length === 0) return null;
   try {
@@ -72,12 +80,17 @@ function parseSendResult(stdout: string): SendResult | null {
     if (
       typeof value.name === "string" &&
       typeof value.submission === "string" &&
-      typeof value.enter === "string" &&
-      typeof value.resend === "string" &&
       typeof value.retried === "boolean" &&
       typeof value.bytes === "number"
     ) {
-      return value as SendResult;
+      return {
+        name: value.name,
+        submission: value.submission as SendResult["submission"],
+        enter: isEnterDisposition(value.enter) ? value.enter : null,
+        resend: isResendDisposition(value.resend) ? value.resend : null,
+        retried: value.retried,
+        bytes: value.bytes,
+      };
     }
   } catch {
     // Not JSON (e.g. an older remote wux without --json) — fall back to passthrough.
@@ -88,7 +101,7 @@ function parseSendResult(stdout: string): SendResult | null {
 // Shape a SendResult into the tool payload. The submission verdict is always
 // surfaced; a non-submitted verdict adds an explicit `warning` so a client never
 // mistakes it for a clean success. Exported for unit-testing the shaping.
-export function sendPayload(resolved: ResolvedTarget, result: SendResult): Record<string, unknown> {
+export function sendPayload(resolved: ResolvedTarget, result: ReportedSendResult): Record<string, unknown> {
   const submitted = result.submission === "submitted";
   const payload: Record<string, unknown> = {
     identity: identityFor(resolved, result.name, tmuxSessionName(result.name)),
@@ -101,15 +114,7 @@ export function sendPayload(resolved: ResolvedTarget, result: SendResult): Recor
     submitted,
   };
   if (!submitted) {
-    const enter = result.enter === "sent" ? "Enter sent" : "Enter withheld: pane busy";
-    const resend = result.resend === "sent"
-      ? "resend sent"
-      : result.resend === "skipped-busy"
-        ? "resend skipped: pane busy"
-        : result.resend === "skipped-unknown"
-          ? "resend skipped: pane state unknown"
-          : "resend not needed";
-    payload.warning = `${result.name} may not have submitted (${result.submission}; ${enter}; ${resend}); this is not a clean success`;
+    payload.warning = `${result.name} may not have submitted (${result.submission}; ${enterDispositionText(result.enter)}; ${resendDispositionText(result.resend)}); this is not a clean success`;
   }
   return payload;
 }

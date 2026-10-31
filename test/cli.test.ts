@@ -48,6 +48,8 @@ describe("help", () => {
     expect(commandHelp("send")).toContain("<run-name>");
     // --json is only recognized before the literal text; the usage must reflect that.
     expect(commandHelp("send")).toContain("[--json] <text>");
+    expect(commandHelp("send")).toContain("wux never sends Tab");
+    expect(commandHelp("send")).toContain("wux attach <run>");
     expect(commandHelp("read")).toContain("--json");
     expect(commandHelp("read")).toContain("--follow");
     expect(commandHelp("status")).toContain("--json");
@@ -617,6 +619,8 @@ describe("dispatch", () => {
     const uncertain = __test.renderSendResult({ ...base, submission: "uncertain", retried: false }, false);
     expect(uncertain.stdout).toBeUndefined();
     expect(uncertain.stderr).toContain("uncertain");
+    const queueable = __test.renderSendResult({ ...base, submission: "not-submitted", enter: "withheld-busy-queueable", resend: "skipped-busy", retried: false }, false);
+    expect(queueable.stderr).toContain("Tab can queue");
     const json = __test.renderSendResult({ ...base, submission: "not-submitted", resend: "sent", retried: true }, true);
     expect(json.stderr).toBeUndefined();
     expect(JSON.parse(json.stdout as string)).toEqual({ name: "r", submission: "not-submitted", enter: "sent", resend: "sent", retried: true, bytes: 5 });
