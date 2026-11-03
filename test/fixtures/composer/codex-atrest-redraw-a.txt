@@ -1,0 +1,10 @@
+╭─────────────────────────────────────────╮
+│ >_ OpenAI Codex                         │
+│ model: gpt-5.5                          │
+╰─────────────────────────────────────────╯
+
+  Tip: Use /compact when the conversation gets long.
+
+› summarize the readme please
+
+  gpt-5.5 default · workspace

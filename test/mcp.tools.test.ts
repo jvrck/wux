@@ -130,9 +130,11 @@ describe("mcp tools — mutation target + confirmation gating", () => {
 
 describe("mcp tools — send payload shaping (unit)", () => {
   test("submitted result carries submission + submitted:true and no warning", () => {
-    const result: SendResult = { name: "r", bytes: 3, submission: "submitted", retried: false };
+    const result: SendResult = { name: "r", bytes: 3, submission: "submitted", enter: "sent", resend: "not-needed", retried: false };
     const payload = sendPayload(localResolved(), result);
     expect(payload.submission).toBe("submitted");
+    expect(payload.enter).toBe("sent");
+    expect(payload.resend).toBe("not-needed");
     expect(payload.submitted).toBe(true);
     expect(payload.warning).toBeUndefined();
     expect((payload.identity as { targetType: string }).targetType).toBe("local");
@@ -140,13 +142,21 @@ describe("mcp tools — send payload shaping (unit)", () => {
 
   test("a not-submitted result surfaces an explicit warning, never a clean success", () => {
     for (const submission of ["uncertain", "not-submitted"] as const) {
-      const result: SendResult = { name: "r", bytes: 3, submission, retried: true };
+      const result: SendResult = { name: "r", bytes: 3, submission, enter: "sent", resend: "sent", retried: true };
       const payload = sendPayload(localResolved(), result);
       expect(payload.submission).toBe(submission);
+      expect(payload.resend).toBe("sent");
       expect(payload.submitted).toBe(false);
       expect(typeof payload.warning).toBe("string");
       expect(payload.warning as string).toContain(submission);
     }
+  });
+
+  test("an unreported remote disposition stays null and is named honestly in the warning", () => {
+    const payload = sendPayload(localResolved(), { name: "r", bytes: 3, submission: "not-submitted", enter: null, resend: null, retried: false });
+    expect(payload.enter).toBeNull();
+    expect(payload.resend).toBeNull();
+    expect(payload.warning).toContain("not reported by remote");
   });
 });
 
@@ -234,6 +244,8 @@ describe("mcp tools — full local loop (open → list → send → read → int
       expect(["submitted", "uncertain", "not-submitted"]).toContain(sent.structured.submission as string);
       // shell backend always classifies submitted.
       expect(sent.structured.submission).toBe("submitted");
+      expect(sent.structured.enter).toBe("sent");
+      expect(sent.structured.resend).toBe("not-needed");
       expect(sent.structured.submitted).toBe(true);
       expect("retried" in sent.structured).toBe(true);
       expectIdentity(sent.structured, "local", name);
@@ -366,16 +378,51 @@ describe("mcp tools — remote target forwarding", () => {
       const remoteCmd = args[args.length - 1];
       if (remoteCmd.includes("'--version'")) return { code: 0, stdout: "2099.01.02\n", stderr: "" };
       // the forwarded `send --json` returns the SendResult envelope
-      return { code: 0, stdout: `${JSON.stringify({ name: "r1", submission: "submitted", retried: false, bytes: 2 })}\n`, stderr: "" };
+      return { code: 0, stdout: `${JSON.stringify({ name: "r1", submission: "submitted", enter: "sent", resend: "not-needed", retried: false, bytes: 2 })}\n`, stderr: "" };
     });
     try {
       const sent = await call(harness.client, "send", { name: "r1", text: "hi", target: "work" });
       expect(sent.structured.submission).toBe("submitted");
+      expect(sent.structured.enter).toBe("sent");
+      expect(sent.structured.resend).toBe("not-needed");
       expect(sent.structured.submitted).toBe(true);
       expect((sent.structured.identity as { host: string }).host).toBe("worker");
       // ensureFeature ran a version check before forwarding the mutation
       expect(calls.some((argv) => argv[argv.length - 1].includes("'--version'"))).toBe(true);
       expect(calls.some((argv) => argv[argv.length - 1].includes("'send'"))).toBe(true);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("an older remote envelope keeps its structured verdict and reports missing dispositions", async () => {
+    const harness = await connectRemote(async (args) => {
+      const remoteCmd = args[args.length - 1];
+      if (remoteCmd.includes("'--version'")) return { code: 0, stdout: "2099.01.02\n", stderr: "" };
+      return { code: 0, stdout: `${JSON.stringify({ name: "r1", submission: "submitted", retried: false, bytes: 2 })}\n`, stderr: "" };
+    });
+    try {
+      const sent = await call(harness.client, "send", { name: "r1", text: "hi", target: "work" });
+      expect(sent.structured.submission).toBe("submitted");
+      expect(sent.structured.enter).toBeNull();
+      expect(sent.structured.resend).toBeNull();
+      expect(sent.structured.submitted).toBe(true);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  test("an unknown remote disposition is reported as unavailable rather than mislabelled", async () => {
+    const harness = await connectRemote(async (args) => {
+      const remoteCmd = args[args.length - 1];
+      if (remoteCmd.includes("'--version'")) return { code: 0, stdout: "2099.01.02\n", stderr: "" };
+      return { code: 0, stdout: `${JSON.stringify({ name: "r1", submission: "not-submitted", enter: "mystery", resend: "later", retried: false, bytes: 2 })}\n`, stderr: "" };
+    });
+    try {
+      const sent = await call(harness.client, "send", { name: "r1", text: "hi", target: "work" });
+      expect(sent.structured.enter).toBeNull();
+      expect(sent.structured.resend).toBeNull();
+      expect(sent.structured.warning).toContain("not reported by remote");
     } finally {
       await harness.close();
     }
@@ -452,10 +499,12 @@ describe("mcp tools — raw-host (allowRawHost) forwarding resolves wux on the r
       calls.push(args);
       const remoteCmd = args[args.length - 1];
       if (remoteCmd.includes("'--version'")) return { code: 0, stdout: "2099.01.02\n", stderr: "" };
-      return { code: 0, stdout: `${JSON.stringify({ name: "r1", submission: "submitted", retried: false, bytes: 2 })}\n`, stderr: "" };
+      return { code: 0, stdout: `${JSON.stringify({ name: "r1", submission: "submitted", enter: "sent", resend: "not-needed", retried: false, bytes: 2 })}\n`, stderr: "" };
     });
     try {
       const sent = await call(harness.client, "send", { name: "r1", text: "hi", target: "raw.example" });
+      expect(sent.structured.enter).toBe("sent");
+      expect(sent.structured.resend).toBe("not-needed");
       expect(sent.structured.submitted).toBe(true);
       const versionProbe = calls.find((argv) => argv[argv.length - 1].includes("'--version'"));
       const sendForward = calls.find((argv) => argv[argv.length - 1].includes("'send'"));
