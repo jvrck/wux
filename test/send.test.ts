@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { runCli } from "../src/cli";
 import { runCommand } from "../src/commands/run";
 import { sendCommand } from "../src/commands/send";
+import { inputMessageDigest, normalizeCodexInput } from "../src/runtime/events";
 import type { ProcessResult } from "../src/runtime/process";
 import { loadRun, saveRun } from "../src/runtime/runs";
 import { classifyComposerReady, classifySubmission, sendLiteral } from "../src/runtime/tmux";
@@ -124,6 +125,41 @@ describe("send", () => {
       expect(events).toContain('"retried":false');
     } finally {
       if (created) await killTmux(name);
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("records a trimmed input digest only for Codex sends", async () => {
+    if (!(await hasTmux())) return;
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const codex = uniqueRunName("send-codex-digest");
+    const shell = uniqueRunName("send-shell-no-digest");
+    let codexCreated = false;
+    let shellCreated = false;
+    try {
+      // A shell keeps this test self-contained; changing only persisted backend
+      // metadata exercises sendCommand's Codex event branch without a nested TUI.
+      await runCommand({ backend: "shell", name: codex, cwd: temp.root });
+      codexCreated = true;
+      const codexMeta = await loadRun(codex);
+      await saveRun({ ...codexMeta, backend: "codex" });
+      const padded = "  codex prompt  \n";
+      await sendCommand({ name: codex, text: padded, forceOwner: false });
+      const codexEvents = await readFile(join(temp.stateHome, "wux", "runs", codex, "events.jsonl"), "utf8");
+      expect(codexEvents).toContain(`"inputMessageDigest":"${inputMessageDigest(normalizeCodexInput(padded))}"`);
+      expect(codexEvents).not.toContain(padded);
+
+      await runCommand({ backend: "shell", name: shell, cwd: temp.root });
+      shellCreated = true;
+      await sendCommand({ name: shell, text: "shell prompt", forceOwner: false });
+      const shellEvents = await readFile(join(temp.stateHome, "wux", "runs", shell, "events.jsonl"), "utf8");
+      expect(shellEvents).not.toContain("inputMessageDigest");
+    } finally {
+      if (codexCreated) await killTmux(codex);
+      if (shellCreated) await killTmux(shell);
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();
     }

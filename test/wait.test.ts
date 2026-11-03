@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runCli } from "../src/cli";
-import { probeHookSignal, probeSentinelSignal, waitCommand } from "../src/commands/wait";
+import { probeHookSignal, probeSentinelSignal, resolveSignalSnapshot, waitCommand } from "../src/commands/wait";
 import { runCommand } from "../src/commands/run";
 import { sendCommand } from "../src/commands/send";
 import { appendBackendSignal, appendEvent, readWaitSettled } from "../src/runtime/events";
@@ -384,6 +384,97 @@ describe("wait", () => {
         pollIntervalMs: 250,
       });
       expect(await probeSentinelSignal("sentinel")).toBe("sentinel");
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("requires a matching digest for Codex sentinel completion", async () => {
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = "codex-sentinel-digest";
+
+    try {
+      const dir = join(temp.stateHome, "wux", "runs", name);
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, "turn-complete"), "turn-complete 2026-06-08T00:00:00.000Z right\n", "utf8");
+      expect(await probeSentinelSignal(name, null, "right", true)).toBe("sentinel");
+      expect(await probeSentinelSignal(name, null, "wrong", true)).toBeUndefined();
+      expect(await probeSentinelSignal(name, null, undefined, true)).toBeUndefined();
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("passes the Codex input digest to snapshot and wait sentinel probes", async () => {
+    let snapshotProbe: unknown[] | undefined;
+    await resolveSignalSnapshot(
+      { name: "codex-snapshot", backend: "codex" },
+      {
+        readObservation: async () => ({ lastTurnInputAt: "2026-06-08T00:00:00.000Z", lastTurnInputDigest: "digest" }),
+        probeSentinel: async (...args) => {
+          snapshotProbe = args;
+          return undefined;
+        },
+        readSettled: async () => undefined,
+      },
+    );
+    expect(snapshotProbe).toEqual(["codex-snapshot", "2026-06-08T00:00:00.000Z", "digest", true]);
+
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const time = clock();
+    try {
+      const name = "codex-wait-digest";
+      await appendEvent(name, { type: "send", at: "2026-06-08T00:00:00.000Z", inputMessageDigest: "digest" });
+      const dir = join(temp.stateHome, "wux", "runs", name);
+      await writeFile(join(dir, "turn-complete"), "turn-complete 2026-06-08T00:00:01.000Z digest\n", "utf8");
+      const result = await waitCommand({
+        name,
+        idleMs: 500,
+        timeoutMs: 2_000,
+        pollIntervalMs: 250,
+        now: time.now,
+        sleep: time.sleep,
+        loadRun: async () => ({ name, tmuxSession: "wux_codex_wait_digest", backend: "codex" }),
+        hasSession: async () => true,
+        capturePane: async () => {
+          throw new Error("matching sentinel should win before capture");
+        },
+      });
+      expect(result.completedVia).toBe("sentinel");
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("does not use a Codex sentinel after an interrupt without a digest", async () => {
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const time = clock();
+    const name = "codex-interrupt-no-digest";
+    try {
+      await appendEvent(name, { type: "interrupt", at: "2026-06-08T00:00:00.000Z" });
+      const dir = join(temp.stateHome, "wux", "runs", name);
+      await writeFile(join(dir, "turn-complete"), "turn-complete 2026-06-08T00:00:01.000Z digest\n", "utf8");
+      const result = await waitCommand({
+        name,
+        idleMs: 500,
+        timeoutMs: 2_000,
+        pollIntervalMs: 250,
+        now: time.now,
+        sleep: time.sleep,
+        loadRun: async () => ({ name, tmuxSession: "wux_codex_interrupt_no_digest", backend: "codex" }),
+        hasSession: async () => true,
+        capturePane: async () => "stable\n",
+      });
+      expect(result.completedVia).toBe("quiescence");
     } finally {
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();

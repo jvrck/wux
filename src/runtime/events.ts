@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runDir } from "./state";
@@ -21,22 +22,51 @@ export type BackendSignal = "turn-complete" | "awaiting-approval";
 
 export interface BackendSignalEvent extends RunEvent {
   type: "backend-signal";
-  signal: BackendSignal;
+  signal?: BackendSignal;
   at: string;
   turnId?: string;
   lastAssistantMessage?: string;
+  payloadType?: string;
+  threadId?: string;
+  client?: string;
+  inputMessagesCount?: number;
+  inputMessageDigest?: string;
 }
 
 export interface BackendSignalInput {
-  signal: BackendSignal;
+  signal?: BackendSignal;
   at?: string;
   turnId?: string;
   lastAssistantMessage?: string;
+  payloadType?: string;
+  threadId?: string;
+  client?: string;
+  inputMessagesCount?: number;
+  inputMessageDigest?: string;
 }
 
 export interface BackendSignalObservation {
   signal?: BackendSignalEvent;
   lastTurnInputAt: string | null;
+  lastTurnInputDigest?: string;
+}
+
+interface TurnInput {
+  at: string | null;
+  inputMessageDigest?: string;
+  ambiguousDuplicate?: boolean;
+}
+
+// This digest lets Codex hook payloads correlate with a send without retaining
+// the operator's prompt in events.jsonl. Codex includes prior conversation in
+// later payloads, but its final input message is the submitted turn; its title
+// sub-turn instead ends in Codex's title-generation instruction.
+export function inputMessageDigest(message: string): string {
+  return createHash("sha256").update(message).digest("hex");
+}
+
+export function normalizeCodexInput(text: string): string {
+  return text.trim();
 }
 
 // Persisted record of a `wait` settle so the read-only `result` snapshot can
@@ -110,6 +140,11 @@ export async function appendBackendSignal(runName: string, input: BackendSignalI
     at,
     ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
     ...(input.lastAssistantMessage !== undefined ? { lastAssistantMessage: input.lastAssistantMessage } : {}),
+    ...(input.payloadType !== undefined ? { payloadType: input.payloadType } : {}),
+    ...(input.threadId !== undefined ? { threadId: input.threadId } : {}),
+    ...(input.client !== undefined ? { client: input.client } : {}),
+    ...(input.inputMessagesCount !== undefined ? { inputMessagesCount: input.inputMessagesCount } : {}),
+    ...(input.inputMessageDigest !== undefined ? { inputMessageDigest: input.inputMessageDigest } : {}),
   };
   await appendEvent(runName, event);
 
@@ -119,11 +154,15 @@ export async function appendBackendSignal(runName: string, input: BackendSignalI
     lastSignal: input.signal,
     at,
     ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
+    ...(input.inputMessageDigest !== undefined ? { inputMessageDigest: input.inputMessageDigest } : {}),
+    ...(input.inputMessagesCount !== undefined ? { inputMessagesCount: input.inputMessagesCount } : {}),
   };
-  await writeFile(join(dir, "state.json"), `${JSON.stringify(state, null, 2)}
+  if (input.signal !== undefined) {
+    await writeFile(join(dir, "state.json"), `${JSON.stringify(state, null, 2)}
 `, "utf8");
+  }
   if (input.signal === "turn-complete") {
-    await writeFile(join(dir, "turn-complete"), `${input.signal} ${at}
+    await writeFile(join(dir, "turn-complete"), `${input.signal} ${at}${input.inputMessageDigest === undefined ? "" : ` ${input.inputMessageDigest}`}
 `, "utf8");
   }
   return event;
@@ -140,26 +179,26 @@ export async function readLatestBackendSignal(runName: string): Promise<BackendS
 
 export async function readBackendSignalObservation(runName: string): Promise<BackendSignalObservation> {
   const events = await readEvents(runName);
-  let lastTurnInputIndex = -1;
-  let lastTurnInputAt: string | null = null;
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-    if (!TURN_INPUT_TYPES.has(event.type)) continue;
-    lastTurnInputIndex = index;
-    lastTurnInputAt = typeof event.at === "string" ? event.at : null;
-    break;
-  }
+  const lastTurnInput = findLastTurnInput(events);
+  const lastTurnInputIndex = lastTurnInput.index;
+  const lastTurnInputAt = lastTurnInput.input.at;
 
   for (let index = events.length - 1; index > lastTurnInputIndex; index -= 1) {
     const event = events[index];
-    if (isBackendSignalEvent(event)) return { signal: event, lastTurnInputAt };
+    if (isBackendSignalEvent(event) && signalMatchesTurn(event, lastTurnInput.input)) {
+      return { signal: event, lastTurnInputAt, ...(lastTurnInput.input.inputMessageDigest !== undefined ? { lastTurnInputDigest: lastTurnInput.input.inputMessageDigest } : {}) };
+    }
   }
 
   const stateSignal = await readBackendSignalState(runName);
-  if (stateSignal && signalIsAfterLastTurnInput(stateSignal, lastTurnInputAt)) {
-    return { signal: stateSignal, lastTurnInputAt };
+  if (stateSignal && signalMatchesTurn(stateSignal, lastTurnInput.input) && signalIsAfterLastTurnInput(stateSignal, lastTurnInputAt)) {
+    return { signal: stateSignal, lastTurnInputAt, ...(lastTurnInput.input.inputMessageDigest !== undefined ? { lastTurnInputDigest: lastTurnInput.input.inputMessageDigest } : {}) };
   }
-  return { lastTurnInputAt };
+  return { lastTurnInputAt, ...(lastTurnInput.input.inputMessageDigest !== undefined ? { lastTurnInputDigest: lastTurnInput.input.inputMessageDigest } : {}) };
+}
+
+export async function readCurrentTurnInput(runName: string): Promise<TurnInput> {
+  return findLastTurnInput(await readEvents(runName)).input;
 }
 
 export async function appendWaitSettled(runName: string, input: WaitSettledInput): Promise<WaitSettledEvent> {
@@ -219,6 +258,8 @@ async function readBackendSignalState(runName: string): Promise<BackendSignalEve
         signal: parsed.lastSignal,
         at: parsed.at,
         ...(typeof parsed.turnId === "string" ? { turnId: parsed.turnId } : {}),
+        ...(typeof parsed.inputMessageDigest === "string" ? { inputMessageDigest: parsed.inputMessageDigest } : {}),
+        ...(typeof parsed.inputMessagesCount === "number" ? { inputMessagesCount: parsed.inputMessagesCount } : {}),
       };
     }
   } catch {
@@ -233,6 +274,37 @@ function isBackendSignalEvent(event: RunEvent): event is BackendSignalEvent {
     (event.signal === "turn-complete" || event.signal === "awaiting-approval") &&
     typeof event.at === "string"
   );
+}
+
+function findLastTurnInput(events: RunEvent[]): { index: number; input: TurnInput } {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!TURN_INPUT_TYPES.has(event.type)) continue;
+    const digest = typeof event.inputMessageDigest === "string" ? event.inputMessageDigest : undefined;
+    return {
+      index,
+      input: {
+        at: typeof event.at === "string" ? event.at : null,
+        ...(digest !== undefined ? { inputMessageDigest: digest } : {}),
+        ...(digest !== undefined && hasAmbiguousDuplicate(events, index, digest) ? { ambiguousDuplicate: true } : {}),
+      },
+    };
+  }
+  return { index: -1, input: { at: null } };
+}
+
+function hasAmbiguousDuplicate(events: RunEvent[], currentIndex: number, digest: string): boolean {
+  for (let index = currentIndex - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (isBackendSignalEvent(event)) return false;
+    if (event.type === "send" && event.inputMessageDigest === digest) return true;
+  }
+  return false;
+}
+
+function signalMatchesTurn(signal: BackendSignalEvent, input: TurnInput): boolean {
+  if (signal.inputMessageDigest === undefined) return true;
+  return input.inputMessageDigest !== undefined && signal.inputMessageDigest === input.inputMessageDigest;
 }
 
 function signalIsAfterLastTurnInput(signal: BackendSignalEvent, lastTurnInputAt: string | null): boolean {

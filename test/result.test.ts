@@ -124,10 +124,10 @@ describe("result", () => {
     });
   });
 
-  test("resolves completedVia sentinel when only the turn-complete file exists", async () => {
+  test("resolves completedVia sentinel when only a non-Codex turn-complete file exists", async () => {
     await withState(async (stateHome) => {
-      const name = "codex-sentinel";
-      const dir = await seedRun(stateHome, name, "codex");
+      const name = "claude-sentinel";
+      const dir = await seedRun(stateHome, name, "claude");
       await writeFile(join(dir, "turn-complete"), "turn-complete 2026-06-08T03:00:00.000Z\n", "utf8");
 
       const envelope = await resultCommand({ name });
