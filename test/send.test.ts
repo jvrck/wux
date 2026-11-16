@@ -296,6 +296,9 @@ describe("classifySubmission", () => {
 // instantly off the supplied frame sequence.
 const FAST_GATE = { sleep: async (): Promise<void> => {}, probeIntervalMs: 0, maxProbeSamples: 3, stableSamples: 2, settleMs: 0 } as const;
 
+const composerFixture = (name: string): Promise<string> =>
+  readFile(join(import.meta.dir, "fixtures", "composer", `${name}.txt`), "utf8");
+
 // A capture stub that yields successive frames and then sticks on the last so a
 // slightly-off capture count still reads the final pane state.
 function frameCapture(frames: string[]): () => Promise<string> {
@@ -386,11 +389,11 @@ describe("sendLiteral readiness-gated path", () => {
     expect(enterCount(sent)).toBe(0);
   });
 
-  test("withholds Enter from a pane without a recognisable composer", async () => {
-    for (const frame of ["Do you trust this folder?\n❯ 1. Yes, proceed\n  2. No", ""]) {
+  test("withholds all keys from the pinned Codex trust dialog or a blank pane", async () => {
+    for (const frame of [await composerFixture("codex-trust-dialog"), ""]) {
       const sent: string[][] = [];
       const result = await sendLiteral("wux_x", "1\r y", {
-        backend: "claude",
+        backend: "codex",
         runner: recordingRunner(sent),
         capture: frameCapture([frame]),
         ...FAST_GATE,
@@ -398,6 +401,25 @@ describe("sendLiteral readiness-gated path", () => {
       expect(result).toEqual({ submission: "not-submitted", retried: false, reason: "no-composer" });
       // Neither dialog hotkeys nor carriage returns can reach a pre-composer pane.
       expect(sent).toHaveLength(0);
+    }
+  });
+
+  test("uses the bottom live composer despite transcript trust words and the permissions footer", async () => {
+    for (const [backend, fixture] of [
+      ["claude", "claude-atrest-transcript-words"],
+      ["codex", "codex-atrest-empty"],
+    ] as const) {
+      const sent: string[][] = [];
+      const frame = await composerFixture(fixture);
+      const result = await sendLiteral("wux_x", "send this literal", {
+        backend,
+        runner: recordingRunner(sent),
+        capture: frameCapture([frame]),
+        ...FAST_GATE,
+      });
+      expect(result).toEqual({ submission: "submitted", retried: false });
+      expect(sent.some((args) => args.includes("-l") && args.includes("send this literal"))).toBe(true);
+      expect(enterCount(sent)).toBe(1);
     }
   });
 
@@ -565,9 +587,6 @@ describe("sendLiteral legacy/degrade paths", () => {
 });
 
 describe("classifyComposerReady", () => {
-  const composer = (name: string): Promise<string> =>
-    readFile(join(import.meta.dir, "fixtures", "composer", `${name}.txt`), "utf8");
-
   test("fewer than two frames is unknown", () => {
     expect(classifyComposerReady(["❯ hello"], "hello")).toBe("unknown");
   });
@@ -610,34 +629,34 @@ describe("classifyComposerReady", () => {
   });
 
   test("real fixture: claude at-rest with the pending literal is ready", async () => {
-    const frame = await composer("claude-atrest-pending");
+    const frame = await composerFixture("claude-atrest-pending");
     expect(classifyComposerReady([frame, frame], "please summarize the readme")).toBe("ready");
   });
 
   test("real fixture: claude at-rest EMPTY (ghost) is not ready for a typed literal", async () => {
-    const frame = await composer("claude-atrest-empty");
+    const frame = await composerFixture("claude-atrest-empty");
     expect(classifyComposerReady([frame, frame], "please summarize the readme")).toBe("unknown");
   });
 
   test("real fixture: claude busy pane is not ready", async () => {
-    const frame = await composer("claude-busy");
+    const frame = await composerFixture("claude-busy");
     // The busy fixture's composer is empty; for any typed literal it is not ready.
     expect(classifyComposerReady([frame, frame], "anything at all here")).not.toBe("ready");
   });
 
   test("real fixture: an idle pane with STRANDED text is ready (strand is classifySubmission's job)", async () => {
-    const frame = await composer("claude-strand-idle");
+    const frame = await composerFixture("claude-strand-idle");
     const stranded = "Run exactly this in bash and wait for it, then reply DONE: sleep 35; echo slept";
     expect(classifyComposerReady([frame, frame], stranded)).toBe("ready");
   });
 
   test("real fixture: codex at-rest with the pending literal is ready", async () => {
-    const frame = await composer("codex-atrest-pending");
+    const frame = await composerFixture("codex-atrest-pending");
     expect(classifyComposerReady([frame, frame], "summarize the readme please")).toBe("ready");
   });
 
   test("real fixture: codex busy pane is not ready", async () => {
-    const frame = await composer("codex-busy");
+    const frame = await composerFixture("codex-busy");
     expect(classifyComposerReady([frame, frame], "summarize the readme please")).not.toBe("ready");
   });
 

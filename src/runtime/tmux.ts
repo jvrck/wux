@@ -440,8 +440,9 @@ const CONTROL_EXCEPT_NEWLINE_RE = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g;
 const MIN_COMPOSER_SIGNATURE = 4;
 // Marker prefix (+ optional trailing space) stripped to read the composer head.
 const COMPOSER_MARKER_RE = new RegExp(`${COMPOSER_LINE_RE.source}\\s?`);
+// Pinned by codex-trust-dialog.txt: a bottom-most highlighted menu choice is
+// not an input composer, even though Codex uses the same marker glyph for both.
 const DIALOG_CHOICE_RE = /^(?:\d+[.)]\s+|yes\b|no\b)/i;
-const TRUST_DIALOG_RE = /\b(?:trust|permission|approve|allow)\b/i;
 
 // Cross-backend "turn in flight" signal. Both Claude and Codex print "esc to
 // interrupt" in the status row while a turn is running (Claude: "· esc to
@@ -475,15 +476,16 @@ export function stripAnsi(value: string): string {
 }
 
 function hasRecognizedComposer(frame: string): boolean {
-  const clean = stripAnsi(frame);
-  // Claude/Codex trust prompts can put the selection cursor on a line beginning
-  // with the same glyph as a composer. Treat any trust wording or numbered/yes-no
-  // selection as a dialog, so it cannot authorize literal hotkeys.
-  if (TRUST_DIALOG_RE.test(clean)) return false;
-  return clean.split("\n").some((line) => {
-    if (!COMPOSER_LINE_RE.test(line)) return false;
-    return !DIALOG_CHOICE_RE.test(line.replace(COMPOSER_MARKER_RE, "").trim());
-  });
+  const lines = stripAnsi(frame).split("\n");
+  // Match composerTextAnchor's bottom-up structure: transcript turns can share
+  // the marker glyph, but the final marker is the live composer region.
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (!COMPOSER_LINE_RE.test(line)) continue;
+    const head = line.replace(COMPOSER_MARKER_RE, "").trim();
+    return !DIALOG_CHOICE_RE.test(head);
+  }
+  return false;
 }
 
 // Whether the pre-submit readiness gate is active. Default-ON; the kill-switch

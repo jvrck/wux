@@ -1,0 +1,6 @@
+● Please explain whether this plan should trust, allow, approve, or change permissions.
+
+────────────────────────────────────────────────────────────────────────────────
+❯ Try "how do I log an error?"
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
