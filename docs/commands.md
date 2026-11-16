@@ -125,7 +125,7 @@ wux send smoke --json "printf 'hello from wux\n'"
 `send` resolves run metadata, refuses missing/stopped/dead sessions, checks ownership, sends literal text plus Enter, and appends a structured send event with byte count only. Use `--force-owner` to intentionally send to a run owned by another orchestrator.
 
 `--json` must appear before the literal text and prints
-`{name, submission, retried, bytes}`.
+`{name, submission, retried, bytes}`. A withheld submit can include a `reason`.
 
 ### Readiness gate (claude/codex)
 
@@ -140,10 +140,16 @@ a pane that stays genuinely busy returns an honest non-`submitted` verdict rathe
 than a silent strand; gate completion on `wait` plus ground truth, never on the
 `send` verdict.
 
+If Claude starts in an untrusted working directory, its trust dialog has no ready
+composer. `wux run claude` fails with `exited-during-startup` and a pane tail if
+the session exits in its short startup check; use a trusted `--cwd` or `--print`.
+If the dialog remains open, `wux send` withholds Enter and returns
+`not-submitted` with `reason: "no-composer"`; wux never accepts or dismisses the
+dialog.
+
 `shell` keeps the unconditional fast path, and any other/unknown backend falls back
-to the legacy blind type+Enter. Set **`WUX_SEND_READINESS=0`** to revert every
-backend to that legacy behaviour (the kill-switch; mirrors `WUX_FORCE_LOCAL` as a
-single env-flag escape hatch).
+to the legacy blind type+Enter. Claude and Codex never use that fallback: their
+Enter key remains withheld until a ready composer is observed.
 
 The gate adds a small, bounded latency to a gated `send` on the happy path (the
 readiness probe plus settles, roughly an extra half-second on an idle claude/codex

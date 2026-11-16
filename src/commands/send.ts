@@ -17,6 +17,7 @@ export interface SendResult {
   bytes: number;
   submission: Submission;
   retried: boolean;
+  reason?: "no-composer";
 }
 
 export async function sendCommand(options: SendOptions): Promise<SendResult> {
@@ -29,6 +30,13 @@ export async function sendCommand(options: SendOptions): Promise<SendResult> {
     capture: (session, tail) => capturePane(session, tail, connection),
   });
   const bytes = Buffer.byteLength(options.text);
-  await appendEvent(meta.name, { type: "send", bytes, submission: submit.submission, retried: submit.retried, by: options.actor ?? currentOwner() });
-  return { name: meta.name, bytes, submission: submit.submission, retried: submit.retried };
+  await appendEvent(meta.name, {
+    type: "send",
+    bytes,
+    submission: submit.submission,
+    retried: submit.retried,
+    ...(submit.reason !== undefined ? { reason: submit.reason } : {}),
+    by: options.actor ?? currentOwner(),
+  });
+  return { name: meta.name, bytes, submission: submit.submission, retried: submit.retried, ...(submit.reason !== undefined ? { reason: submit.reason } : {}) };
 }

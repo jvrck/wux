@@ -73,7 +73,7 @@ describe("claude backend", () => {
 
     try {
       await mkdir(bin);
-      await writeFile(fakeClaude, "#!/bin/sh\nprintf 'startup dialog evidence\\n'\nsleep 0.4\nexit 7\n", "utf8");
+      await writeFile(fakeClaude, "#!/bin/sh\nsleep 0.1\nprintf 'startup dialog evidence\\n'\nsleep 0.2\nexit 7\n", "utf8");
       await chmod(fakeClaude, 0o755);
 
       await expect(
@@ -84,6 +84,10 @@ describe("claude backend", () => {
           env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, WUX_NOTIFY_PATH: "/tmp/wux-notify" },
         }),
       ).rejects.toThrow(/exited-during-startup.*startup dialog evidence/s);
+      const events = await readFile(join(runDir(name), "events.jsonl"), "utf8");
+      expect(events).toContain('"result":"exited-during-startup"');
+      expect(events).toContain("startup dialog evidence");
+      expect(await hasSession(`wux_${name}`)).toBe(false);
     } finally {
       if (await hasSession(`wux_${name}`)) await killTmux(name);
       process.env.XDG_STATE_HOME = old;

@@ -1,4 +1,4 @@
-import { mkdir, open, rm } from "node:fs/promises";
+import { mkdir, open, readFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { backendCommand } from "../backends";
@@ -6,7 +6,7 @@ import { appendEvent } from "../runtime/events";
 import { WuxError } from "../runtime/errors";
 import { createRunMeta, saveRun, type RunBackend } from "../runtime/runs";
 import { runDir, runsRoot } from "../runtime/state";
-import { ambientTmuxConnection, createSession, discoverSocketPath, hasSession, killSession } from "../runtime/tmux";
+import { ambientTmuxConnection, createSession, discoverSocketPath, hasSession, killSession, paneDeadStatus } from "../runtime/tmux";
 
 export type { RunBackend } from "../runtime/runs";
 
@@ -27,6 +27,12 @@ export interface RunResult {
   cwd: string;
   runDir: string;
 }
+
+// A short, fixed post-start observation catches a backend that opens a modal or
+// otherwise exits immediately after tmux reports the session created. It is a
+// one-shot check inside `run`, not a watcher.
+const CLAUDE_STARTUP_CHECK_MS = 500;
+const STARTUP_PANE_TAIL_LINES = 20;
 
 export async function runCommand(options: RunOptions): Promise<RunResult> {
   const cwd = resolve(options.cwd);
@@ -54,6 +60,7 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
   }
 
   let sessionCreated = false;
+  let exitedDuringStartup = false;
   try {
     const paneLog = join(dir, "pane.log");
     await touch(paneLog);
@@ -62,8 +69,33 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
     sessionCreated = true;
     const tmuxSocketPath = await discoverSocketPath(meta.tmuxSession, connection);
     await saveRun({ ...meta, tmuxSocketPath });
+    if (meta.backend === "claude") {
+      await delay(CLAUDE_STARTUP_CHECK_MS);
+      const live = await hasSession(meta.tmuxSession, connection);
+      const exitStatus = live ? await paneDeadStatus(meta.tmuxSession, connection) : "unknown";
+      if (!live || exitStatus !== undefined) {
+        const paneTail = await paneLogTail(paneLog, STARTUP_PANE_TAIL_LINES);
+        // Some tmux configurations retain a dead pane. It is still the session we
+        // just created, so remove only that inert container after preserving its
+        // log evidence; later commands must not mistake it for a live worker.
+        if (live) await killSession(meta.tmuxSession, connection);
+        const stoppedAt = new Date().toISOString();
+        await saveRun({ ...meta, tmuxSocketPath, status: "stopped", stoppedAt, updatedAt: stoppedAt });
+        await appendEvent(meta.name, {
+          type: "create",
+          backend: meta.backend,
+          owner: meta.owner,
+          result: "exited-during-startup",
+          exitStatus,
+          paneTail,
+        });
+        exitedDuringStartup = true;
+        throw new WuxError(`exited-during-startup: ${meta.name}; pane tail:\n${paneTail || "(no pane output captured)"}`);
+      }
+    }
     await appendEvent(meta.name, { type: "create", backend: meta.backend, owner: meta.owner });
   } catch (error) {
+    if (exitedDuringStartup) throw error;
     const rollbackErrors: unknown[] = [];
     if (sessionCreated) {
       try {
@@ -84,6 +116,24 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
   }
 
   return { name: meta.name, backend: meta.backend, tmuxSession: meta.tmuxSession, cwd: meta.cwd, runDir: dir };
+}
+
+async function paneLogTail(path: string, lines: number): Promise<string> {
+  try {
+    const raw = await readFile(path, "utf8");
+    return raw
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .slice(-lines)
+      .join("\n");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+    throw error;
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function errorMessage(error: unknown): string {

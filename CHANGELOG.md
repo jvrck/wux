@@ -10,6 +10,11 @@ intentionally not reproduced here.
 
 ## Unreleased
 
+### Fixed
+
+- Made Claude startup exits fail loudly with a pane tail, and withheld Enter from
+  Claude/Codex panes without a recognised composer.
+
 ## 2026.10.31
 
 No breaking changes.

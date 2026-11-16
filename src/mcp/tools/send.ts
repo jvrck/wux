@@ -94,9 +94,10 @@ export function sendPayload(resolved: ResolvedTarget, result: SendResult): Recor
     submission: result.submission,
     retried: result.retried,
     submitted,
+    ...(result.reason !== undefined ? { reason: result.reason } : {}),
   };
   if (!submitted) {
-    payload.warning = `${result.name} may not have submitted (${result.submission}${result.retried ? ", retried" : ""}); this is not a clean success`;
+    payload.warning = `${result.name} may not have submitted (${result.submission}${result.reason ? `, ${result.reason}` : ""}${result.retried ? ", retried" : ""}); this is not a clean success`;
   }
   return payload;
 }

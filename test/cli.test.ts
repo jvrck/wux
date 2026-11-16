@@ -638,5 +638,7 @@ describe("dispatch", () => {
     const json = __test.renderSendResult({ ...base, submission: "not-submitted", retried: true }, true);
     expect(json.stderr).toBeUndefined();
     expect(JSON.parse(json.stdout as string)).toEqual({ name: "r", submission: "not-submitted", retried: true, bytes: 5 });
+    const noComposer = __test.renderSendResult({ ...base, submission: "not-submitted", retried: false, reason: "no-composer" }, true);
+    expect(JSON.parse(noComposer.stdout as string)).toEqual({ name: "r", submission: "not-submitted", retried: false, bytes: 5, reason: "no-composer" });
   });
 });

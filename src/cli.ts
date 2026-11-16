@@ -708,14 +708,15 @@ function parseSendArgs(args: string[]): { name: string; text?: string; forceOwne
 export function renderSendResult(result: SendResult, json: boolean): { stdout?: string; stderr?: string } {
   if (json) {
     return {
-      stdout: `${JSON.stringify({ name: result.name, submission: result.submission, retried: result.retried, bytes: result.bytes })}\n`,
+      stdout: `${JSON.stringify({ name: result.name, submission: result.submission, retried: result.retried, bytes: result.bytes, ...(result.reason !== undefined ? { reason: result.reason } : {}) })}\n`,
     };
   }
   const retried = result.retried ? ", retried" : "";
   if (result.submission === "submitted") {
     return { stdout: `sent ${result.bytes} bytes to ${result.name} (submitted${retried})\n` };
   }
-  return { stderr: `wux: warning: ${result.name} may not have submitted (${result.submission}${retried})\n` };
+  const reason = result.reason !== undefined ? `, ${result.reason}` : "";
+  return { stderr: `wux: warning: ${result.name} may not have submitted (${result.submission}${reason}${retried})\n` };
 }
 
 function forwardTimeoutForCommand(command: string | undefined, args: string[] = []): number | undefined {

@@ -386,6 +386,19 @@ describe("sendLiteral readiness-gated path", () => {
     expect(enterCount(sent)).toBe(0);
   });
 
+  test("withholds Enter from a pane without a recognisable composer", async () => {
+    const sent: string[][] = [];
+    const dialog = "Choose whether this folder is trusted";
+    const result = await sendLiteral("wux_x", "queued instruction", {
+      backend: "claude",
+      runner: recordingRunner(sent),
+      capture: frameCapture([dialog, dialog, dialog, dialog]),
+      ...FAST_GATE,
+    });
+    expect(result).toEqual({ submission: "not-submitted", retried: false, reason: "no-composer" });
+    expect(enterCount(sent)).toBe(0);
+  });
+
   test("multi-line literal is typed in ONE -l and submitted with ONE Enter", async () => {
     const sent: string[][] = [];
     const rendered = "❯ line one\n  line two";
@@ -441,42 +454,6 @@ describe("sendLiteral legacy/degrade paths", () => {
     });
     expect(result).toEqual({ submission: "submitted", retried: false });
     expect(captures).toBe(0);
-  });
-
-  test("kill-switch (readiness:false) reverts to the legacy blind type+Enter+classify", async () => {
-    const sent: string[][] = [];
-    let captures = 0;
-    const frames = ["baseline", "thinking…"]; // before, after (submitted) — no gate captures
-    const next = frameCapture(frames);
-    const result = await sendLiteral("wux_x", "do the thing", {
-      backend: "claude",
-      readiness: false,
-      settleMs: 0,
-      sleep: async (): Promise<void> => {},
-      runner: recordingRunner(sent),
-      capture: async () => {
-        captures += 1;
-        return next();
-      },
-    });
-    expect(result).toEqual({ submission: "submitted", retried: false });
-    expect(captures).toBe(2); // before + one re-observe only (no readiness probe)
-    expect(enterCount(sent)).toBe(1);
-  });
-
-  test("legacy path still does the single blind retry on not-submitted", async () => {
-    const sent: string[][] = [];
-    const frames = ["baseline", "> printf 'hi'", "working…"]; // before, after-1 (strand), after-retry (submitted)
-    const result = await sendLiteral("wux_x", "printf 'hi'", {
-      backend: "claude",
-      readiness: false,
-      settleMs: 0,
-      sleep: async (): Promise<void> => {},
-      runner: recordingRunner(sent),
-      capture: frameCapture(frames),
-    });
-    expect(result).toEqual({ submission: "submitted", retried: true });
-    expect(enterCount(sent)).toBe(2);
   });
 
   test("an unknown backend falls through to the legacy path (never hangs on never-ready)", async () => {

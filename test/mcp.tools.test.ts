@@ -148,6 +148,13 @@ describe("mcp tools — send payload shaping (unit)", () => {
       expect(payload.warning as string).toContain(submission);
     }
   });
+
+  test("a no-composer refusal surfaces its reason", () => {
+    const result: SendResult = { name: "r", bytes: 3, submission: "not-submitted", retried: false, reason: "no-composer" };
+    const payload = sendPayload(localResolved(), result);
+    expect(payload.reason).toBe("no-composer");
+    expect(payload.warning).toContain("no-composer");
+  });
 });
 
 describe("mcp tools — by stamping (unit, real run)", () => {

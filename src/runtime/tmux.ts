@@ -137,6 +137,19 @@ export async function hasSession(session: string, connection: TmuxConnection = a
   return (await probeSession(session, connection)).state === "live";
 }
 
+// A tmux server can be configured to retain a dead pane, in which case
+// `has-session` remains true after the backend has exited. Return its recorded
+// status only when tmux positively marks the pane dead; otherwise leave it
+// unknown rather than inferring an exit from ordinary pane output.
+export async function paneDeadStatus(session: string, connection: TmuxConnection = ambientTmuxConnection()): Promise<string | undefined> {
+  const result = await runTmux(connection, ["display-message", "-p", "-t", exactPaneTarget(session), "-F", "#{pane_dead}:#{pane_dead_status}"]);
+  if (result.code !== 0) return undefined;
+  const [dead, ...statusParts] = result.stdout.trim().split(":");
+  if (dead !== "1") return undefined;
+  const status = statusParts.join(":").trim();
+  return status.length > 0 ? status : "unknown";
+}
+
 export function unavailableTmuxMessage(connection: TmuxConnection, detail?: string): string {
   const target = connection.socketPath !== undefined ? ` at ${connection.socketPath}` : "";
   const suffix = detail && detail.length > 0 ? `: ${detail}` : "";
@@ -361,6 +374,7 @@ export type Submission = "submitted" | "uncertain" | "not-submitted";
 export interface SubmitResult {
   submission: Submission;
   retried: boolean;
+  reason?: "no-composer";
 }
 
 export interface SendLiteralOptions {
@@ -378,17 +392,13 @@ export interface SendLiteralOptions {
   // readiness-gated backend this is scaled up for large/multi-line pastes so the
   // TUI has time to render them; see `scaledSettleMs`.
   settleMs?: number;
-  // Readiness-gate overrides. `readiness` forces the pre-submit gate on/off
-  // (default: the `WUX_SEND_READINESS` env flag — on unless set to "0"); the rest
-  // tune the bounded quiescence probe. Exposed mainly so the gated path is
-  // deterministically unit-testable without a live backend TUI (inject `sleep`
-  // and `now` to drive the bound without real time).
-  readiness?: boolean;
+  // Readiness-gate overrides tune the bounded quiescence probe. Exposed mainly so
+  // the gated path is deterministically unit-testable without a live backend TUI
+  // (inject `sleep` and `now` to drive the bound without real time).
   probeIntervalMs?: number;
   maxProbeSamples?: number;
   stableSamples?: number;
   sleep?: (ms: number) => Promise<void>;
-  env?: NodeJS.ProcessEnv;
 }
 
 const SUBMIT_SETTLE_MS = 200;
@@ -435,14 +445,6 @@ const SETTLE_MAX_EXTRA_MS = 1_500;
 
 function stripAnsi(value: string): string {
   return value.replace(ANSI_RE, "").replace(STRAY_ESC_RE, "");
-}
-
-// Whether the pre-submit readiness gate is active. Default-ON; the kill-switch
-// `WUX_SEND_READINESS=0` reverts to the legacy blind type+Enter behaviour in the
-// same release. Strict "0" match (unset/empty/anything-else = on) so the revert
-// is one exact sentinel, not truthiness guessing.
-function readinessEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.WUX_SEND_READINESS !== "0";
 }
 
 // Probe only known interactive Ink backends. shell has its own fast-path; an
@@ -724,10 +726,10 @@ export async function sendLiteral(session: string, text: string, options: SendLi
     return { submission: "submitted", retried: false };
   }
 
-  const env = options.env ?? process.env;
-  // Gate only known interactive backends, and only when the kill-switch leaves the
-  // readiness path on; everything else falls through to the legacy blind path.
-  const gated = (options.readiness ?? readinessEnabled(env)) && isGatedBackend(backend);
+  // Gate every known interactive backend; an operator must never press Enter into
+  // a pane whose composer cannot be recognised. Everything else keeps the legacy
+  // path because it has no verified composer model.
+  const gated = isGatedBackend(backend);
   const settleMs = gated ? scaledSettleMs(baseSettleMs, text) : baseSettleMs;
   const probeOpts: ReadinessProbeOptions = {
     intervalMs: options.probeIntervalMs ?? READINESS_PROBE_INTERVAL_MS,
@@ -735,7 +737,18 @@ export async function sendLiteral(session: string, text: string, options: SendLi
     stableSamples: options.stableSamples ?? READINESS_STABLE_SAMPLES,
     sleep,
   };
-  const probe = (): Promise<string> => capture(session, CLASSIFY_TAIL).catch(() => "");
+  let captureFailed = false;
+  let observedPane = false;
+  const probe = (): Promise<string> =>
+    capture(session, CLASSIFY_TAIL)
+      .then((frame) => {
+        if (frame.trim().length > 0) observedPane = true;
+        return frame;
+      })
+      .catch(() => {
+        captureFailed = true;
+        return "";
+      });
 
   const before = await probe();
 
@@ -746,12 +759,9 @@ export async function sendLiteral(session: string, text: string, options: SendLi
 
   // Pre-submit readiness gate (gated backends only): wait, bounded, for the typed
   // literal to render and the pane to be at-rest before Enter. Crucially, do NOT
-  // press Enter into a pane positively observed as busy — that Enter is a dropped
-  // no-op that just re-strands the text (the very failure this fixes). "ready" →
-  // submit (it lands); "unknown" → submit best-effort (the literal may simply have
-  // rendered slowly; the honest verdict catches the outcome); "busy" → withhold the
-  // submit and report the honest verdict (the literal is typed/queued — a later
-  // idempotent send, or wait-then-send, lands it without losing bytes).
+  // press Enter into a pane positively observed as busy OR one with no recognised
+  // composer. The former is a dropped no-op; the latter may be a startup or trust
+  // dialog. Both keep the literal visible without driving an unknown screen.
   let preReady: ComposerReadiness = "ready";
   if (gated) {
     preReady = await waitForComposerReady(probe, text, probeOpts);
@@ -763,6 +773,9 @@ export async function sendLiteral(session: string, text: string, options: SendLi
 
   if (preReady === "busy") {
     submission = classifySubmission(before, await probe(), text, backend);
+  } else if (gated && preReady === "unknown") {
+    if (observedPane) return { submission: "not-submitted", retried: false, reason: "no-composer" };
+    return { submission: captureFailed ? "uncertain" : "not-submitted", retried: false };
   } else {
     await sendKeysOnce(connection, target, session, ["Enter"], "submit text to");
     await sleep(settleMs);
