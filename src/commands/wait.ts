@@ -252,6 +252,7 @@ export async function probeSentinelSignal(name: string, lastTurnInputAt: string 
 
 export function currentTurnSignal(backend: string, observation: BackendSignalObservation) {
   const signal = observation.signal;
+  if (signal?.explicit === true) return signal;
   if (backend !== "codex" || signal?.signal !== "turn-complete") return signal;
   return observation.lastTurnInputDigest !== undefined && signal.inputMessageDigest === observation.lastTurnInputDigest ? signal : undefined;
 }

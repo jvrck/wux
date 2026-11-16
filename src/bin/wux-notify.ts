@@ -45,8 +45,10 @@ export async function runNotifyCli(args: string[], options: NotifyCliOptions = {
       throw new Error("grok notifications require an explicit signal");
     }
     const provenance = payloadProvenance(payload);
+    const signal = await resolveSignal(runName, meta?.backend, parsedArgs, payload, provenance);
+    const current = meta?.backend === "codex" ? await readCurrentTurnInput(runName) : undefined;
     await appendBackendSignal(runName, {
-      signal: await resolveSignal(runName, meta?.backend, parsedArgs, payload, provenance),
+      signal,
       turnId: firstStringField(payload, ["turnId", "turn_id", "turn-id"]),
       lastAssistantMessage: firstStringField(payload, [
         "lastAssistantMessage",
@@ -57,6 +59,16 @@ export async function runNotifyCli(args: string[], options: NotifyCliOptions = {
         "last-agent-message",
       ]),
       ...provenance,
+      ...(parsedArgs.explicitSignal === true ? { explicit: true } : {}),
+      // A payload-derived Codex signal received before send's result is retained
+      // for the in-flight race, but only a confirmed submitted turn can create
+      // the conventional sentinel. Explicit operator assertions always win.
+      ...(signal === "turn-complete" &&
+      (parsedArgs.explicitSignal === true ||
+        meta?.backend !== "codex" ||
+        (current?.eligible === true && current.inputMessageDigest === provenance.inputMessageDigest))
+        ? { writeSentinel: true }
+        : { writeSentinel: false }),
     });
     return 0;
   } catch (error) {

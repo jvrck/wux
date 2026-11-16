@@ -160,6 +160,7 @@ describe("codex backend", () => {
     const bin = join(temp.root, "bin");
     const fakeCodex = join(bin, "codex");
     const notifyWrapper = join(bin, "wux-notify");
+    const fakeReady = join(temp.root, "fake-ready");
     const titleSent = join(temp.root, "title-sent");
     const notifyPath = join(process.cwd(), "src", "bin", "wux-notify.ts");
     const name = uniqueRunName("codex-title-probe");
@@ -180,7 +181,7 @@ describe("codex backend", () => {
       await chmod(notifyWrapper, 0o755);
       await writeFile(
         fakeCodex,
-        `#!/bin/sh\nIFS= read -r ignored\n${JSON.stringify(notifyWrapper)} ${JSON.stringify(name)} ${JSON.stringify(title)}\n: > ${JSON.stringify(titleSent)}\nsleep 30\n`,
+        `#!/bin/sh\nprintf 'Codex ready\\n'\n: > ${JSON.stringify(fakeReady)}\nIFS= read -r ignored\nprintf 'Working\\n'\n${JSON.stringify(notifyWrapper)} ${JSON.stringify(name)} ${JSON.stringify(title)}\n: > ${JSON.stringify(titleSent)}\nsleep 30\n`,
         "utf8",
       );
       await chmod(fakeCodex, 0o755);
@@ -196,8 +197,9 @@ describe("codex backend", () => {
         },
       });
       created = true;
+      await waitForPath(fakeReady);
       process.env.WUX_SEND_READINESS = "0";
-      await sendCommand({ name, text: prompt, forceOwner: false });
+      expect(await sendCommand({ name, text: prompt, forceOwner: false })).toMatchObject({ submission: "submitted" });
       await waitForPath(titleSent);
 
       expect(await resultCommand({ name })).toMatchObject({ outcome: "unknown" });
@@ -225,6 +227,7 @@ describe("codex backend", () => {
     process.env.XDG_STATE_HOME = temp.stateHome;
     const bin = join(temp.root, "bin");
     const fakeCodex = join(bin, "codex");
+    const fakeReady = join(temp.root, "fake-ready");
     const hookSent = join(temp.root, "hook-sent");
     const notifyPath = join(process.cwd(), "src", "bin", "wux-notify.ts");
     const name = uniqueRunName("codex-immediate-hook");
@@ -237,15 +240,16 @@ describe("codex backend", () => {
       await mkdir(bin);
       await writeFile(
         fakeCodex,
-        `#!/bin/sh\nstty raw -echo\ndd bs=1 count=1 of=/dev/null 2>/dev/null\nprintf '%s\\n' ${JSON.stringify(completion)} >> ${JSON.stringify(eventsPath)}\n: > ${JSON.stringify(hookSent)}\nsleep 30\n`,
+        `#!/bin/sh\nprintf 'Codex ready\\n'\n: > ${JSON.stringify(fakeReady)}\nstty raw -echo\ndd bs=1 count=1 of=/dev/null 2>/dev/null\nprintf 'Working\\n'\nprintf '%s\\n' ${JSON.stringify(completion)} >> ${JSON.stringify(eventsPath)}\n: > ${JSON.stringify(hookSent)}\nsleep 30\n`,
         "utf8",
       );
       await chmod(fakeCodex, 0o755);
       await runCommand({ backend: "codex", name, cwd: temp.root, env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, WUX_NOTIFY_PATH: notifyPath } });
       created = true;
+      await waitForPath(fakeReady);
       process.env.WUX_SEND_READINESS = "0";
 
-      await sendCommand({ name, text: prompt, forceOwner: false });
+      expect(await sendCommand({ name, text: prompt, forceOwner: false })).toMatchObject({ submission: "submitted" });
       await waitForPath(hookSent);
       const events = await readEvents(name);
       const startedAt = events.findIndex((event) => event.type === "send" && event.phase === "started");
@@ -257,6 +261,101 @@ describe("codex backend", () => {
       if (created) await killTmux(name);
       if (oldReadiness === undefined) delete process.env.WUX_SEND_READINESS;
       else process.env.WUX_SEND_READINESS = oldReadiness;
+      process.env.XDG_STATE_HOME = oldStateHome;
+      await temp.cleanup();
+    }
+  });
+
+  test("does not let an unsubmitted Codex send authorize a later matching hook", async () => {
+    if (!(await hasTmux())) return;
+    const temp = await tempState();
+    const oldStateHome = process.env.XDG_STATE_HOME;
+    const oldReadiness = process.env.WUX_SEND_READINESS;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const bin = join(temp.root, "bin");
+    const fakeCodex = join(bin, "codex");
+    const notifyWrapper = join(bin, "wux-notify");
+    const notifyPath = join(process.cwd(), "src", "bin", "wux-notify.ts");
+    const composerReady = join(temp.root, "composer-ready");
+    const name = uniqueRunName("codex-not-submitted");
+    const prompt = "NEVER_SUBMITTED";
+    const completion = JSON.stringify({ type: "agent-turn-complete", "turn-id": "stranded-turn", "input-messages": [prompt], "last-assistant-message": "UNRELATED_LATER_REPLY" });
+    let created = false;
+
+    try {
+      await mkdir(bin);
+      await writeFile(
+        notifyWrapper,
+        `#!/bin/sh\nexport XDG_STATE_HOME=${JSON.stringify(temp.stateHome)}\nexec ${JSON.stringify(notifyPath)} "$@"\n`,
+        "utf8",
+      );
+      await chmod(notifyWrapper, 0o755);
+      await writeFile(fakeCodex, `#!/bin/sh\nprintf '> \\n'\n: > ${JSON.stringify(composerReady)}\nIFS= read -r input\nprintf '> %s\\n' "$input"\nsleep 30\n`, "utf8");
+      await chmod(fakeCodex, 0o755);
+      await runCommand({ backend: "codex", name, cwd: temp.root, env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, WUX_NOTIFY_PATH: notifyWrapper } });
+      created = true;
+      await waitForPath(composerReady);
+      process.env.WUX_SEND_READINESS = "0";
+
+      expect(await sendCommand({ name, text: prompt, forceOwner: false })).toMatchObject({ submission: "not-submitted" });
+      expect((await runProcess([notifyWrapper, name, completion], { env: { ...process.env, XDG_STATE_HOME: temp.stateHome } })).code).toBe(0);
+      expect(await resultCommand({ name })).toMatchObject({ outcome: "unknown" });
+      await expect(stat(join(temp.stateHome, "wux", "runs", name, "turn-complete"))).rejects.toThrow();
+    } finally {
+      if (created) await killTmux(name);
+      if (oldReadiness === undefined) delete process.env.WUX_SEND_READINESS;
+      else process.env.WUX_SEND_READINESS = oldReadiness;
+      process.env.XDG_STATE_HOME = oldStateHome;
+      await temp.cleanup();
+    }
+  });
+
+  test("records a failed Codex delivery as ineligible after send throws", async () => {
+    if (!(await hasTmux())) return;
+    const temp = await tempState();
+    const oldStateHome = process.env.XDG_STATE_HOME;
+    const oldPath = process.env.PATH;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const bin = join(temp.root, "bin");
+    const fakeCodex = join(bin, "codex");
+    const fakeTmux = join(bin, "tmux");
+    const notifyWrapper = join(bin, "wux-notify");
+    const notifyPath = join(process.cwd(), "src", "bin", "wux-notify.ts");
+    const actualTmux = Bun.which("tmux");
+    const name = uniqueRunName("codex-send-throws");
+    const prompt = "THROWN_DELIVERY";
+    const completion = JSON.stringify({ type: "agent-turn-complete", "turn-id": "thrown-turn", "input-messages": [prompt], "last-assistant-message": "UNRELATED_LATER_REPLY" });
+    let created = false;
+
+    try {
+      expect(actualTmux).toBeDefined();
+      await mkdir(bin);
+      await writeFile(fakeCodex, "#!/bin/sh\nsleep 30\n", "utf8");
+      await chmod(fakeCodex, 0o755);
+      await writeFile(
+        notifyWrapper,
+        `#!/bin/sh\nexport XDG_STATE_HOME=${JSON.stringify(temp.stateHome)}\nexec ${JSON.stringify(notifyPath)} "$@"\n`,
+        "utf8",
+      );
+      await chmod(notifyWrapper, 0o755);
+      await runCommand({ backend: "codex", name, cwd: temp.root, env: { ...process.env, PATH: `${bin}${delimiter}${oldPath ?? ""}`, WUX_NOTIFY_PATH: notifyWrapper } });
+      created = true;
+      await writeFile(
+        fakeTmux,
+        `#!/bin/sh\nfor arg do\n  [ "$arg" = send-keys ] && exit 1\ndone\nexec ${JSON.stringify(actualTmux)} "$@"\n`,
+        "utf8",
+      );
+      await chmod(fakeTmux, 0o755);
+      process.env.PATH = `${bin}${delimiter}${oldPath ?? ""}`;
+
+      await expect(sendCommand({ name, text: prompt, forceOwner: false })).rejects.toThrow();
+      expect((await readEvents(name)).find((event) => event.type === "send" && event.phase === "result")).toMatchObject({ submission: "uncertain", delivery: "failed" });
+      expect((await runProcess([notifyWrapper, name, completion], { env: { ...process.env, XDG_STATE_HOME: temp.stateHome } })).code).toBe(0);
+      expect(await resultCommand({ name })).toMatchObject({ outcome: "unknown" });
+      await expect(stat(join(temp.stateHome, "wux", "runs", name, "turn-complete"))).rejects.toThrow();
+    } finally {
+      if (created) await killTmux(name);
+      process.env.PATH = oldPath;
       process.env.XDG_STATE_HOME = oldStateHome;
       await temp.cleanup();
     }

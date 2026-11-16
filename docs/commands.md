@@ -220,6 +220,15 @@ returns `timeout` or `unknown` without `completedVia`. Verify the active turn
 through the pane or other ground truth, then send a distinct next turn or provide
 an explicit verified completion signal.
 
+Codex delivery eligibility is resolved from the event log, not a timer: its
+pre-submit `send` record lets an in-flight hook be recorded before delivery
+finishes, but that hook can settle only after the matching result is
+`submitted`. A `not-submitted`, `uncertain`, or delivery-error result revokes
+the attempt; an unresolved start (for example, a process killed before it writes
+a result) stays ineligible. Those observations create no completion sentinel and
+leave `wait`/`result` at `timeout` or `unknown`. An explicit verified
+`wux notify <run> turn-complete` remains an operator assertion.
+
 Grok 1.0.62 has no wux-managed per-run hook. For Grok the honest ladder is
 **explicit hook > sentinel > timeout/unknown**: pane quietness never becomes
 `done` or `completedVia: "quiescence"`. A composed external hook must call

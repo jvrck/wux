@@ -20,6 +20,9 @@ intentionally not reproduced here.
   input, so auxiliary title events remain observable without settling a turn.
   Repeated identical unresolved sends stay ambiguous and require an explicit
   follow-up signal or a distinct next turn.
+- Require a matching Codex send to resolve as `submitted` before its hook can
+  settle completion; failed, uncertain, and unresolved delivery attempts remain
+  observable but cannot create a completion sentinel.
 
 ## 2026.10.31
 

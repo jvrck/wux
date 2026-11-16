@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runCli } from "../src/cli";
 import { runNotifyCli } from "../src/bin/wux-notify";
-import { appendEvent, inputMessageDigest, readEvents, readLatestBackendSignal } from "../src/runtime/events";
+import { appendEvent, inputMessageDigest, readBackendSignalObservation, readEvents, readLatestBackendSignal } from "../src/runtime/events";
 import { saveRun } from "../src/runtime/runs";
 import { tempState } from "./helpers";
 
@@ -174,6 +174,45 @@ describe("wux-notify", () => {
 
       expect(await runNotifyCli([name, JSON.stringify({ type: "agent-turn-complete", "input-messages": [prompt] })], { stderr: { write: () => undefined } })).toBe(0);
       expect(await readLatestBackendSignal(name)).toBeUndefined();
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("requires a submitted Codex send result before a matching hook is eligible", async () => {
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const prompt = "delivery eligibility";
+    const payload = JSON.stringify({ type: "agent-turn-complete", "input-messages": [prompt] });
+    try {
+      for (const [label, submission, delivery] of [
+        ["not-submitted", "not-submitted", undefined],
+        ["thrown", "uncertain", "failed"],
+        ["unresolved", undefined, undefined],
+      ] as const) {
+        const name = uniqueRunName(`notify-codex-${label}`);
+        const sendId = `${label}-send`;
+        await saveRun({ name, backend: "codex", tmuxSession: `wux_${name}`, cwd: "/tmp", owner: "tester@host", createdAt: new Date().toISOString(), status: "running" });
+        await appendEvent(name, { type: "send", phase: "started", sendId, inputMessageDigest: inputMessageDigest(prompt) });
+        if (submission !== undefined) {
+          await appendEvent(name, { type: "send", phase: "result", sendId, submission, ...(delivery !== undefined ? { delivery } : {}), inputMessageDigest: inputMessageDigest(prompt) });
+        }
+
+        expect(await runNotifyCli([name, payload], { stderr: { write: () => undefined } })).toBe(0);
+        expect((await readBackendSignalObservation(name)).signal).toBeUndefined();
+        await expect(readFile(join(temp.stateHome, "wux", "runs", name, "turn-complete"), "utf8")).rejects.toThrow();
+      }
+
+      const name = uniqueRunName("notify-codex-in-flight");
+      const sendId = "in-flight-send";
+      await saveRun({ name, backend: "codex", tmuxSession: `wux_${name}`, cwd: "/tmp", owner: "tester@host", createdAt: new Date().toISOString(), status: "running" });
+      await appendEvent(name, { type: "send", phase: "started", sendId, inputMessageDigest: inputMessageDigest(prompt) });
+      expect(await runNotifyCli([name, payload], { stderr: { write: () => undefined } })).toBe(0);
+      expect((await readBackendSignalObservation(name)).signal).toBeUndefined();
+      await appendEvent(name, { type: "send", phase: "result", sendId, submission: "submitted", inputMessageDigest: inputMessageDigest(prompt) });
+      expect(await readBackendSignalObservation(name)).toMatchObject({ signal: { signal: "turn-complete", inputMessageDigest: inputMessageDigest(prompt) } });
     } finally {
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();
