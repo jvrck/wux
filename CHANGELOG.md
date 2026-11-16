@@ -12,6 +12,8 @@ intentionally not reproduced here.
 
 ### Fixed
 
+- Made interactive Claude startup exits fail with a pane tail instead of
+  reporting a successful run start.
 - Made Claude and Codex `wait` require hook or sentinel evidence instead of
   treating a quiet pane as a completed turn.
 
