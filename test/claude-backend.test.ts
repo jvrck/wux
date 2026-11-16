@@ -113,7 +113,7 @@ describe("claude backend", () => {
 
     try {
       await mkdir(bin);
-      await writeFile(fakeClaude, "#!/bin/sh\nprintf 'print completed\\n'\nexit 0\n", "utf8");
+      await writeFile(fakeClaude, "#!/bin/sh\nprintf 'print completed\\n'\nsleep 0.2\nexit 0\n", "utf8");
       await chmod(fakeClaude, 0o755);
 
       await expect(
@@ -143,7 +143,7 @@ describe("claude backend", () => {
 
     try {
       await mkdir(bin);
-      await writeFile(fakeClaude, "#!/bin/sh\nprintf 'print completed\\n'\nexit 0\n", "utf8");
+      await writeFile(fakeClaude, "#!/bin/sh\nprintf 'print completed\\n'\nsleep 0.2\nexit 0\n", "utf8");
       await chmod(fakeClaude, 0o755);
 
       await expect(
