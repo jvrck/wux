@@ -196,6 +196,29 @@ describe("wait", () => {
     expect(activityCalls).toBe(0);
   });
 
+  test("claude and codex static panes without a current-turn signal time out", async () => {
+    for (const backend of ["claude", "codex"] as const) {
+      const time = clock();
+      const name = `quiet-${backend}-${process.pid}-${Date.now()}`;
+      const result = await waitCommand({
+        name,
+        idleMs: 500,
+        timeoutMs: 1_000,
+        pollIntervalMs: 250,
+        now: time.now,
+        sleep: time.sleep,
+        loadRun: async () => ({ name, tmuxSession: `wux_${name}`, backend }),
+        hasSession: async () => true,
+        capturePane: async () => "static interactive pane\n",
+        appendSettled: async () => undefined,
+        readTurnInputAt: async () => null,
+      });
+
+      expect(result).toMatchObject({ name, outcome: "timeout" });
+      expect(result.completedVia).toBeUndefined();
+    }
+  });
+
   test("a quiet grok pane times out rather than reporting quiescence", async () => {
     const time = clock();
     const result = await waitCommand({
