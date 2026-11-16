@@ -404,6 +404,32 @@ describe("sendLiteral readiness-gated path", () => {
     }
   });
 
+  test("submits after a live composer draft that begins like a dialog choice", async () => {
+    for (const [backend, marker, draft] of [
+      ["claude", "❯", "1. fix the test"],
+      ["claude", "❯", "yes, go ahead"],
+      ["claude", "❯", "no"],
+      ["codex", "›", "1. fix the test"],
+      ["codex", "›", "yes, go ahead"],
+      ["codex", "›", "no"],
+    ] as const) {
+      const sent: string[][] = [];
+      const text = "finish the queued request";
+      const held = `${marker} ${draft} ${text}`;
+      const submitted = backend === "claude" ? "✻ Working…\n❯ " : "• Working (1s • esc to interrupt)\n› ";
+      const result = await sendLiteral("wux_x", text, {
+        backend,
+        runner: recordingRunner(sent),
+        capture: frameCapture([`${marker} ${draft}`, held, held, held, submitted]),
+        ...FAST_GATE,
+      });
+
+      expect(result).toEqual({ submission: "submitted", retried: false });
+      expect(sent.some((args) => args.includes("-l") && args.includes(text))).toBe(true);
+      expect(enterCount(sent)).toBe(1);
+    }
+  });
+
   test("uses the bottom live composer despite transcript trust words and the permissions footer", async () => {
     for (const [backend, fixture] of [
       ["claude", "claude-atrest-transcript-words"],
