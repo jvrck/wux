@@ -110,7 +110,16 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
         const probe = await probeSession(meta.tmuxSession, startupConnection);
         if (probe.state === "unavailable") return reportUnavailable(probe.detail);
         if (probe.state === "absent") return "unknown";
-        return paneDeadStatus(meta.tmuxSession, startupConnection);
+        const pane = await paneDeadStatus(meta.tmuxSession, startupConnection);
+        if (pane.state === "dead") return pane.exitStatus;
+        if (pane.state === "live") return undefined;
+
+        // The pane query itself could not establish liveness. Re-probe once to
+        // distinguish a confirmed disappearance from a transport failure.
+        const retry = await probeSession(meta.tmuxSession, startupConnection);
+        if (retry.state === "absent") return "unknown";
+        if (retry.state === "unavailable") return reportUnavailable(retry.detail);
+        return reportUnavailable(pane.detail);
       };
       const reportStartupExit = async (exitStatus: string): Promise<never> => {
         const paneTail = await paneLogTail(paneLog, STARTUP_PANE_TAIL_LINES);
@@ -119,7 +128,13 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
         }
         const probe = await probeSession(meta.tmuxSession, startupConnection);
         if (probe.state === "unavailable") return reportUnavailable(probe.detail);
-        if (probe.state === "live") await killSession(meta.tmuxSession, startupConnection);
+        if (probe.state === "live") {
+          try {
+            await killSession(meta.tmuxSession, startupConnection);
+          } catch (error) {
+            return reportUnavailable(errorMessage(error));
+          }
+        }
         const stoppedAt = new Date().toISOString();
         await saveRun({ ...meta, tmuxSocketPath, status: "stopped", stoppedAt, updatedAt: stoppedAt });
         await appendEvent(meta.name, {
@@ -136,7 +151,11 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
 
       const exitStatus = await startupState();
       if (exitStatus !== undefined) await reportStartupExit(exitStatus);
-      await setRemainOnExit(meta.tmuxSession, false, startupConnection);
+      try {
+        await setRemainOnExit(meta.tmuxSession, false, startupConnection);
+      } catch (error) {
+        return reportUnavailable(errorMessage(error));
+      }
       // A process can exit while remain-on-exit is being toggled. Check once more
       // so an inert retained pane cannot be returned as a live worker.
       const exitAfterToggle = await startupState();

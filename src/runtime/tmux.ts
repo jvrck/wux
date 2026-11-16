@@ -137,16 +137,24 @@ export async function hasSession(session: string, connection: TmuxConnection = a
   return (await probeSession(session, connection)).state === "live";
 }
 
-// A retained dead pane keeps its session visible to `has-session`. Read tmux's
-// recorded status only when it positively marks the pane dead; ordinary output
-// is never evidence that a backend exited.
-export async function paneDeadStatus(session: string, connection: TmuxConnection = ambientTmuxConnection()): Promise<string | undefined> {
+export type PaneDeadProbe =
+  | { state: "live" }
+  | { state: "dead"; exitStatus: string }
+  | { state: "unavailable"; detail?: string };
+
+// A retained dead pane keeps its session visible to `has-session`. A failed
+// query is distinct from a live pane: callers must not convert transport loss
+// into a clean startup or a fabricated backend exit.
+export async function paneDeadStatus(session: string, connection: TmuxConnection = ambientTmuxConnection()): Promise<PaneDeadProbe> {
   const result = await runTmux(connection, ["display-message", "-p", "-t", exactPaneTarget(session), "-F", "#{pane_dead}:#{pane_dead_status}"]);
-  if (result.code !== 0) return undefined;
+  if (result.code !== 0) {
+    const detail = (result.stderr || result.stdout).trim();
+    return { state: "unavailable", ...(detail.length > 0 ? { detail } : {}) };
+  }
   const [dead, ...statusParts] = result.stdout.trim().split(":");
-  if (dead !== "1") return undefined;
+  if (dead !== "1") return { state: "live" };
   const status = statusParts.join(":").trim();
-  return status.length > 0 ? status : "unknown";
+  return { state: "dead", exitStatus: status.length > 0 ? status : "unknown" };
 }
 
 export function unavailableTmuxMessage(connection: TmuxConnection, detail?: string): string {

@@ -201,7 +201,7 @@ describe("claude backend", () => {
           "    for arg in \"$@\"; do [ \"$arg\" = '#{pane_dead}:#{pane_dead_status}' ] && matched=1; done",
           "    ;;",
           '  remain-off) case "$*" in *"set-option"*"remain-on-exit off"*) matched=1;; esac ;;',
-          '  kill-session) case "$*" in *"kill-session"*) matched=1;; esac ;;',
+          '  kill-session) for arg in "$@"; do [ "$arg" = "kill-session" ] && matched=1; done ;;',
           "esac",
           'if [ "$matched" = 1 ] && [ ! -e "$WUX_STARTUP_TMUX_FAILURE_MARKER" ]; then',
           '  : > "$WUX_STARTUP_TMUX_FAILURE_MARKER"',
