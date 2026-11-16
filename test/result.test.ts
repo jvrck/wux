@@ -409,6 +409,21 @@ describe("result", () => {
     });
   });
 
+  test("claude and codex ignore legacy persisted quiescence settles", async () => {
+    await withState(async (stateHome) => {
+      for (const backend of ["claude", "codex"] as const) {
+        const name = `${backend}-legacy-quiescence`;
+        await seedRun(stateHome, name, backend);
+        await appendWaitSettled(name, { outcome: "done", completedVia: "quiescence", sinceInputAt: null });
+
+        const envelope = await resultCommand({ name });
+        expect(envelope.outcome).toBe("unknown");
+        expect(envelope.completedVia).toBeUndefined();
+        expect(resultExitCode(envelope)).toBe(1);
+      }
+    });
+  });
+
   test("end-to-end: wux wait (shell) then wux result agree on done/quiescence", async () => {
     await withState(async (stateHome) => {
       const name = "shell-e2e-agree";
