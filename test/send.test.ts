@@ -456,6 +456,42 @@ describe("sendLiteral legacy/degrade paths", () => {
     expect(captures).toBe(0);
   });
 
+  test("kill-switch (WUX_SEND_READINESS=0) reverts to the legacy blind type+Enter+classify", async () => {
+    const sent: string[][] = [];
+    let captures = 0;
+    const frames = ["baseline", "thinking…"]; // before, after (submitted) — no gate captures
+    const next = frameCapture(frames);
+    const result = await sendLiteral("wux_x", "do the thing", {
+      backend: "claude",
+      env: { WUX_SEND_READINESS: "0" },
+      settleMs: 0,
+      sleep: async (): Promise<void> => {},
+      runner: recordingRunner(sent),
+      capture: async () => {
+        captures += 1;
+        return next();
+      },
+    });
+    expect(result).toEqual({ submission: "submitted", retried: false });
+    expect(captures).toBe(2); // before + one re-observe only (no readiness probe)
+    expect(enterCount(sent)).toBe(1);
+  });
+
+  test("legacy path still does the single blind retry on not-submitted", async () => {
+    const sent: string[][] = [];
+    const frames = ["baseline", "> printf 'hi'", "working…"]; // before, after-1 (strand), after-retry (submitted)
+    const result = await sendLiteral("wux_x", "printf 'hi'", {
+      backend: "claude",
+      readiness: false,
+      settleMs: 0,
+      sleep: async (): Promise<void> => {},
+      runner: recordingRunner(sent),
+      capture: frameCapture(frames),
+    });
+    expect(result).toEqual({ submission: "submitted", retried: true });
+    expect(enterCount(sent)).toBe(2);
+  });
+
   test("an unknown backend falls through to the legacy path (never hangs on never-ready)", async () => {
     const sent: string[][] = [];
     const frames = ["baseline", "thinking…"];

@@ -392,13 +392,17 @@ export interface SendLiteralOptions {
   // readiness-gated backend this is scaled up for large/multi-line pastes so the
   // TUI has time to render them; see `scaledSettleMs`.
   settleMs?: number;
-  // Readiness-gate overrides tune the bounded quiescence probe. Exposed mainly so
-  // the gated path is deterministically unit-testable without a live backend TUI
-  // (inject `sleep` and `now` to drive the bound without real time).
+  // Readiness-gate overrides. `readiness` forces the pre-submit gate on/off
+  // (default: the `WUX_SEND_READINESS` env flag — on unless set to "0"); the rest
+  // tune the bounded quiescence probe. Exposed mainly so the gated path is
+  // deterministically unit-testable without a live backend TUI (inject `sleep`
+  // and `now` to drive the bound without real time).
+  readiness?: boolean;
   probeIntervalMs?: number;
   maxProbeSamples?: number;
   stableSamples?: number;
   sleep?: (ms: number) => Promise<void>;
+  env?: NodeJS.ProcessEnv;
 }
 
 const SUBMIT_SETTLE_MS = 200;
@@ -445,6 +449,14 @@ const SETTLE_MAX_EXTRA_MS = 1_500;
 
 function stripAnsi(value: string): string {
   return value.replace(ANSI_RE, "").replace(STRAY_ESC_RE, "");
+}
+
+// Whether the pre-submit readiness gate is active. Default-ON; the kill-switch
+// `WUX_SEND_READINESS=0` reverts to the legacy blind type+Enter behaviour in the
+// same release. Strict "0" match (unset/empty/anything-else = on) so the revert
+// is one exact sentinel, not truthiness guessing.
+function readinessEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.WUX_SEND_READINESS !== "0";
 }
 
 // Probe only known interactive Ink backends. shell has its own fast-path; an
@@ -726,10 +738,10 @@ export async function sendLiteral(session: string, text: string, options: SendLi
     return { submission: "submitted", retried: false };
   }
 
-  // Gate every known interactive backend; an operator must never press Enter into
-  // a pane whose composer cannot be recognised. Everything else keeps the legacy
-  // path because it has no verified composer model.
-  const gated = isGatedBackend(backend);
+  const env = options.env ?? process.env;
+  // Gate only known interactive backends, and only when the kill-switch leaves the
+  // readiness path on; everything else falls through to the legacy blind path.
+  const gated = (options.readiness ?? readinessEnabled(env)) && isGatedBackend(backend);
   const settleMs = gated ? scaledSettleMs(baseSettleMs, text) : baseSettleMs;
   const probeOpts: ReadinessProbeOptions = {
     intervalMs: options.probeIntervalMs ?? READINESS_PROBE_INTERVAL_MS,

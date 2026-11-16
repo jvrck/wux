@@ -188,7 +188,7 @@ describe("mcp tools — by stamping (unit, real run)", () => {
       expect(input.lastInputBy).toBe("mcp:probe-z");
       created = false; // stopped session already killed
     } finally {
-      if (created) await killTmux(name);
+      await killTmux(name);
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();
     }

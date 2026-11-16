@@ -152,8 +152,9 @@ The startup check is a fixed, one-shot observation (about half a second) inside
 startup exit; inspect `status` or the persisted pane log instead.
 
 `shell` keeps the unconditional fast path, and any other/unknown backend falls back
-to the legacy blind type+Enter. Claude and Codex never use that fallback: their
-Enter key remains withheld until a ready composer is observed.
+to the legacy blind type+Enter. Set **`WUX_SEND_READINESS=0`** to revert every
+backend to that legacy behaviour (the kill-switch; mirrors `WUX_FORCE_LOCAL` as a
+single env-flag escape hatch).
 
 The gate adds a small, bounded latency to a gated `send` on the happy path (the
 readiness probe plus settles, roughly an extra half-second on an idle claude/codex
