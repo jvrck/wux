@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { claudeCommand } from "../src/backends/claude";
 import { backendCommand } from "../src/backends";
@@ -12,6 +12,19 @@ import { hasTmux, killTmux, tempState, waitForArgv } from "./helpers";
 
 function uniqueRunName(prefix: string): string {
   return `${prefix}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+async function waitForPath(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      await stat(path);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for ${path}`);
 }
 
 describe("claude backend", () => {
@@ -97,6 +110,60 @@ describe("claude backend", () => {
       expect(await hasSession(`wux_${name}`)).toBe(false);
     } finally {
       await killTmux(name);
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("reports a tmux transport loss during startup without fabricating an exit", async () => {
+    if (!(await hasTmux())) return;
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const bin = join(temp.root, "bin");
+    const socketRoot = join(temp.root, "tmux");
+    const fakeClaude = join(bin, "claude");
+    const name = uniqueRunName("claude-startup-unavailable");
+    let socketParent: string | undefined;
+    let socketPath: string | undefined;
+    let socketMode: number | undefined;
+
+    try {
+      await mkdir(bin);
+      await mkdir(socketRoot);
+      await writeFile(fakeClaude, "#!/bin/sh\nprintf 'still running\\n'\nsleep 30\n", "utf8");
+      await chmod(fakeClaude, 0o755);
+
+      const result = runCommand({
+        backend: "claude",
+        name,
+        cwd: temp.root,
+        env: {
+          ...process.env,
+          PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
+          TMUX_TMPDIR: socketRoot,
+          WUX_NOTIFY_PATH: "/tmp/wux-notify",
+        },
+      });
+      await waitForPath(join(runDir(name), "startup-ready"));
+      const socketDir = (await readdir(socketRoot, { withFileTypes: true })).find((entry) => entry.isDirectory());
+      if (!socketDir) throw new Error("tmux socket directory was not created");
+      socketParent = join(socketRoot, socketDir.name);
+      socketPath = join(socketParent, "default");
+      socketMode = (await stat(socketParent)).mode & 0o777;
+      await chmod(socketParent, 0);
+
+      await expect(result).rejects.toThrow(/tmux server is unavailable/);
+      await chmod(socketParent, socketMode);
+      socketMode = undefined;
+      const events = await readFile(join(runDir(name), "events.jsonl"), "utf8");
+      expect(events).not.toContain("exited-during-startup");
+      const meta = JSON.parse(await readFile(join(runDir(name), "meta.json"), "utf8"));
+      expect(meta.status).toBe("running");
+      expect((await runProcess(["tmux", "-S", socketPath, "has-session", "-t", `=wux_${name}`])).code).toBe(0);
+    } finally {
+      if (socketParent && socketMode !== undefined) await chmod(socketParent, socketMode);
+      if (socketPath) await runProcess(["tmux", "-S", socketPath, "kill-session", "-t", `=wux_${name}`]);
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();
     }
