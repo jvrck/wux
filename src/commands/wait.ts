@@ -202,17 +202,15 @@ export async function waitCommand(options: WaitOptions): Promise<WaitResult> {
     }
     lastSampleAt = observedAt;
 
-    if (idleAccumulatedMs >= idleMs && meta.backend !== "grok") {
+    if (idleAccumulatedMs >= idleMs && meta.backend === "shell") {
       // Pane silence != process idle. A silent-but-busy shell run (e.g.
       // `yes > /dev/null`, a compute writing only to a file) leaves the pane
       // byte-static, so frame-hash quiescence alone would falsely report `done`.
-      // Before declaring quiescence for a shell run, confirm the pane's
-      // foreground process is the shell itself (prompt returned). If a foreground
-      // child is still running, reset the idle accumulator and keep waiting; the
-      // run then resolves `timeout` rather than a false `done`. claude/codex
-      // ladder behavior is unchanged — they never reach this rung silently busy
-      // because their hook/sentinel rungs run first.
-      if (meta.backend === "shell" && (await paneActivity(meta.tmuxSession)) === "foreground-busy") {
+      // Before declaring quiescence, confirm the pane's foreground process is
+      // the shell itself (prompt returned). If a foreground child is still
+      // running, reset the idle accumulator and keep waiting; the run then
+      // resolves `timeout` rather than a false `done`.
+      if ((await paneActivity(meta.tmuxSession)) === "foreground-busy") {
         idleAccumulatedMs = 0;
       } else {
         return settle({

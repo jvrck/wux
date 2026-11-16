@@ -10,6 +10,11 @@ intentionally not reproduced here.
 
 ## Unreleased
 
+### Fixed
+
+- Made Claude and Codex `wait` require hook or sentinel evidence instead of
+  treating a quiet pane as a completed turn.
+
 ## 2026.10.31
 
 No breaking changes.

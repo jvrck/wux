@@ -197,7 +197,8 @@ A `turn-complete` sentinel file is the second rung. A missing stronger signal is
 unknown and falls through; `wait` never fabricates a hook or sentinel completion.
 Hook and sentinel signals are accepted only for the current turn after the latest
 `send` or `interrupt`, so a previous turn's file drop cannot complete a later
-wait.
+wait. For `claude` and `codex`, a quiet pane is not completion evidence: without
+a current-turn hook or sentinel, they resolve only as `timeout` or `unknown`.
 
 Grok 1.0.62 has no wux-managed per-run hook. For Grok the honest ladder is
 **explicit hook > sentinel > timeout/unknown**: pane quietness never becomes
@@ -206,10 +207,10 @@ Grok 1.0.62 has no wux-managed per-run hook. For Grok the honest ladder is
 explicitly; raw Grok `Notification`, `PermissionDenied`, `SubagentStop`, and
 unknown payloads are deliberately rejected as completion evidence.
 
-Quiescence is a heuristic over the captured pane frame. `wait` polls the pane,
-hashes each frame, and reports done only after the hash stays unchanged for the
-configured idle window. Shell runs do not receive hook injection and can only
-report `completedVia: "quiescence"`.
+Quiescence is a shell-only heuristic over the captured pane frame. `wait` polls
+the pane, hashes each frame, and reports done only after the hash stays unchanged
+for the configured idle window. Shell runs do not receive hook injection and can
+only report `completedVia: "quiescence"`.
 
 Pane silence is not the same as process idleness. A silent-but-busy shell run
 (`yes > /dev/null`, a long compute that writes only to a file) leaves the pane
