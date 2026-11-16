@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
   appendWaitSettled,
@@ -49,7 +49,7 @@ interface SnapshotMeta {
 
 interface SnapshotProbes {
   readObservation?: (name: string) => Promise<BackendSignalObservation>;
-  probeSentinel?: (name: string, lastTurnInputAt: string | null, inputMessageDigest?: string, requireInputMessageDigest?: boolean) => Promise<CompletedVia | undefined>;
+  probeSentinel?: (name: string, lastTurnInputAt: string | null) => Promise<CompletedVia | undefined>;
   readSettled?: (name: string) => Promise<WaitSettledRecord | undefined>;
 }
 
@@ -73,10 +73,7 @@ export async function resolveSignalSnapshot(meta: SnapshotMeta, probes: Snapshot
     return { outcome: "blocked", completedVia: "hook", observation: { ...observation, signal: hook } };
   }
 
-  const sentinel =
-    isShell
-      ? undefined
-      : await probeSentinel(meta.name, observation.lastTurnInputAt, meta.backend === "codex" ? observation.lastTurnInputDigest : undefined, meta.backend === "codex");
+  const sentinel = isShell ? undefined : await probeSentinel(meta.name, observation.lastTurnInputAt);
   if (sentinel) {
     return { outcome: "done", completedVia: sentinel, observation };
   }
@@ -190,15 +187,7 @@ export async function waitCommand(options: WaitOptions): Promise<WaitResult> {
       return settle({ ...baseResult(meta.name, "blocked", idleMs, timeoutMs, elapsed(startedAt, observedAt), pollIntervalMs), completedVia: "hook" });
     }
 
-    const sentinel =
-      meta.backend === "shell"
-        ? undefined
-        : await probeSentinelSignal(
-            meta.name,
-            signalObservation?.lastTurnInputAt ?? null,
-            meta.backend === "codex" ? signalObservation?.lastTurnInputDigest : undefined,
-            meta.backend === "codex",
-          );
+    const sentinel = meta.backend === "shell" ? undefined : await probeSentinelSignal(meta.name, signalObservation?.lastTurnInputAt ?? null);
     if (sentinel) {
       return settle({ ...baseResult(meta.name, "done", idleMs, timeoutMs, elapsed(startedAt, observedAt), pollIntervalMs), completedVia: sentinel });
     }
@@ -247,23 +236,12 @@ export async function probeHookSignal(_name: string): Promise<CompletedVia | und
   return signal?.signal === "turn-complete" ? "hook" : undefined;
 }
 
-export async function probeSentinelSignal(
-  name: string,
-  lastTurnInputAt: string | null = null,
-  expectedInputMessageDigest?: string,
-  requireInputMessageDigest = false,
-): Promise<CompletedVia | undefined> {
+export async function probeSentinelSignal(name: string, lastTurnInputAt: string | null = null): Promise<CompletedVia | undefined> {
   try {
-    const path = join(runDir(name), "turn-complete");
-    const sentinel = await stat(path);
+    const sentinel = await stat(join(runDir(name), "turn-complete"));
     if (lastTurnInputAt !== null) {
       const inputAt = Date.parse(lastTurnInputAt);
       if (Number.isFinite(inputAt) && sentinel.mtimeMs <= inputAt) return undefined;
-    }
-    if (requireInputMessageDigest && expectedInputMessageDigest === undefined) return undefined;
-    if (expectedInputMessageDigest !== undefined) {
-      const content = await readFile(path, "utf8");
-      if (!content.trimEnd().endsWith(` ${expectedInputMessageDigest}`)) return undefined;
     }
     return "sentinel";
   } catch (error) {

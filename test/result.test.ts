@@ -108,11 +108,13 @@ describe("result", () => {
       const name = "codex-title-hook";
       await seedRun(stateHome, name, "codex");
       await appendEvent(name, { type: "send", at: "2026-06-08T05:00:00.000Z", bytes: 12 });
-      await appendBackendSignal(name, {
-        signal: "turn-complete",
+      await appendEvent(name, {
+        type: "backend-signal",
         at: "2026-06-08T05:00:01.000Z",
         turnId: "auxiliary-title-turn",
         lastAssistantMessage: '{"title":"Summarize the changes"}',
+        payloadType: "agent-turn-complete",
+        inputMessageDigest: "auxiliary-title-input",
       });
 
       const envelope = await resultCommand({ name });
@@ -145,8 +147,8 @@ describe("result", () => {
 
   test("resolves completedVia sentinel when only the turn-complete file exists", async () => {
     await withState(async (stateHome) => {
-      const name = "claude-sentinel";
-      const dir = await seedRun(stateHome, name, "claude");
+      const name = "codex-sentinel";
+      const dir = await seedRun(stateHome, name, "codex");
       await writeFile(join(dir, "turn-complete"), "turn-complete 2026-06-08T03:00:00.000Z\n", "utf8");
 
       const envelope = await resultCommand({ name });

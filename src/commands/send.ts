@@ -23,19 +23,33 @@ export async function sendCommand(options: SendOptions): Promise<SendResult> {
   const meta = await requireLiveRun(options.name);
   await assertOwner(meta, options.forceOwner);
   const connection = connectionForMeta(meta);
+  const bytes = Buffer.byteLength(options.text);
+  const by = options.actor ?? currentOwner();
+  // Codex can notify as soon as its pane receives input. Persist the turn
+  // discriminator before typing so that hook is never ordered before its own
+  // current turn. Keep this record if delivery later fails or is withheld.
+  if (meta.backend === "codex") {
+    await appendEvent(meta.name, {
+      type: "send",
+      phase: "started",
+      bytes,
+      inputMessageDigest: inputMessageDigest(options.text),
+      by,
+    });
+  }
   const submit = await sendLiteral(meta.tmuxSession, options.text, {
     backend: meta.backend,
     connection,
     capture: (session, tail) => capturePane(session, tail, connection),
   });
-  const bytes = Buffer.byteLength(options.text);
   await appendEvent(meta.name, {
     type: "send",
+    ...(meta.backend === "codex" ? { phase: "result" } : {}),
     bytes,
     submission: submit.submission,
     retried: submit.retried,
     ...(meta.backend === "codex" ? { inputMessageDigest: inputMessageDigest(options.text) } : {}),
-    by: options.actor ?? currentOwner(),
+    by,
   });
   return { name: meta.name, bytes, submission: submit.submission, retried: submit.retried };
 }

@@ -18,6 +18,8 @@ intentionally not reproduced here.
   treating a quiet pane as a completed turn.
 - Made Codex hook completion fail closed and bind to the latest trimmed sent
   input, so auxiliary title events remain observable without settling a turn.
+  Repeated identical unresolved sends stay ambiguous and require an explicit
+  follow-up signal or a distinct next turn.
 
 ## 2026.10.31
 

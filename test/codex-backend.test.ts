@@ -4,6 +4,7 @@ import { delimiter, join } from "node:path";
 import { backendCommand } from "../src/backends";
 import { codexCommand } from "../src/backends/codex";
 import { runCommand } from "../src/commands/run";
+import { sendCommand } from "../src/commands/send";
 import { resultCommand } from "../src/commands/result";
 import { waitCommand } from "../src/commands/wait";
 import { appendEvent, inputMessageDigest, readEvents } from "../src/runtime/events";
@@ -210,6 +211,51 @@ describe("codex backend", () => {
     } finally {
       if (created) await killTmux(name);
       process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("records the Codex turn before an immediate matching hook", async () => {
+    if (!(await hasTmux())) return;
+    const temp = await tempState();
+    const oldStateHome = process.env.XDG_STATE_HOME;
+    const oldReadiness = process.env.WUX_SEND_READINESS;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const bin = join(temp.root, "bin");
+    const fakeCodex = join(bin, "codex");
+    const hookSent = join(temp.root, "hook-sent");
+    const notifyPath = join(process.cwd(), "src", "bin", "wux-notify.ts");
+    const name = uniqueRunName("codex-immediate-hook");
+    const prompt = "Reply with WUX_IMMEDIATE_REPLY";
+    const eventsPath = join(temp.stateHome, "wux", "runs", name, "events.jsonl");
+    const completion = JSON.stringify({ type: "backend-signal", signal: "turn-complete", at: "2026-06-08T00:00:01.000Z", run: name, turnId: "immediate-turn", lastAssistantMessage: "WUX_IMMEDIATE_REPLY", inputMessageDigest: inputMessageDigest(prompt) });
+    let created = false;
+
+    try {
+      await mkdir(bin);
+      await writeFile(
+        fakeCodex,
+        `#!/bin/sh\nstty raw -echo\ndd bs=1 count=1 of=/dev/null 2>/dev/null\nprintf '%s\\n' ${JSON.stringify(completion)} >> ${JSON.stringify(eventsPath)}\n: > ${JSON.stringify(hookSent)}\nsleep 30\n`,
+        "utf8",
+      );
+      await chmod(fakeCodex, 0o755);
+      await runCommand({ backend: "codex", name, cwd: temp.root, env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, WUX_NOTIFY_PATH: notifyPath } });
+      created = true;
+      process.env.WUX_SEND_READINESS = "0";
+
+      await sendCommand({ name, text: prompt, forceOwner: false });
+      await waitForPath(hookSent);
+      const events = await readEvents(name);
+      const startedAt = events.findIndex((event) => event.type === "send" && event.phase === "started");
+      const hookAt = events.findIndex((event) => event.type === "backend-signal" && event.turnId === "immediate-turn");
+      expect(startedAt).toBeGreaterThanOrEqual(0);
+      expect(startedAt).toBeLessThan(hookAt);
+      expect(await resultCommand({ name })).toMatchObject({ outcome: "done", completedVia: "hook", lastAssistantMessage: "WUX_IMMEDIATE_REPLY" });
+    } finally {
+      if (created) await killTmux(name);
+      if (oldReadiness === undefined) delete process.env.WUX_SEND_READINESS;
+      else process.env.WUX_SEND_READINESS = oldReadiness;
+      process.env.XDG_STATE_HOME = oldStateHome;
       await temp.cleanup();
     }
   });

@@ -94,7 +94,6 @@ export interface WaitSettledInput {
 
 // Mutation events whose actor + timestamp feed `lastInput` (concurrency visibility).
 const MUTATION_TYPES = new Set(["send", "interrupt", "stop"]);
-const TURN_INPUT_TYPES = new Set(["send", "interrupt"]);
 
 export async function appendEvent(runName: string, event: RunEvent): Promise<void> {
   const dir = runDir(runName);
@@ -181,7 +180,7 @@ export async function readBackendSignalObservation(runName: string): Promise<Bac
   let lastTurnInputDigest: string | undefined;
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (!TURN_INPUT_TYPES.has(event.type)) continue;
+    if (!isTurnInputEvent(event)) continue;
     lastTurnInputIndex = index;
     lastTurnInputAt = typeof event.at === "string" ? event.at : null;
     lastTurnInputDigest = typeof event.inputMessageDigest === "string" ? event.inputMessageDigest : undefined;
@@ -207,7 +206,7 @@ export async function readCurrentTurnInput(runName: string): Promise<CurrentTurn
   const events = await readEvents(runName);
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (event.type !== "send" || typeof event.inputMessageDigest !== "string") continue;
+    if (event.type !== "send" || event.phase === "result" || typeof event.inputMessageDigest !== "string") continue;
     return {
       inputMessageDigest: event.inputMessageDigest,
       ...(hasAmbiguousDuplicate(events, index, event.inputMessageDigest) ? { ambiguousDuplicate: true } : {}),
@@ -239,7 +238,7 @@ export async function readWaitSettled(runName: string): Promise<WaitSettledEvent
   let lastTurnInputAt: string | null = null;
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (!TURN_INPUT_TYPES.has(event.type)) continue;
+    if (!isTurnInputEvent(event)) continue;
     lastTurnInputAt = typeof event.at === "string" ? event.at : null;
     break;
   }
@@ -294,9 +293,13 @@ function hasAmbiguousDuplicate(events: RunEvent[], currentIndex: number, digest:
   for (let index = currentIndex - 1; index >= 0; index -= 1) {
     const event = events[index];
     if (isBackendSignalEvent(event)) return false;
-    if (event.type === "send" && event.inputMessageDigest === digest) return true;
+    if (event.type === "send" && event.phase !== "result" && event.inputMessageDigest === digest) return true;
   }
   return false;
+}
+
+function isTurnInputEvent(event: RunEvent): boolean {
+  return event.type === "interrupt" || (event.type === "send" && event.phase !== "result");
 }
 
 function signalIsAfterLastTurnInput(signal: BackendSignalEvent, lastTurnInputAt: string | null): boolean {

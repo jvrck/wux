@@ -180,6 +180,23 @@ describe("wux-notify", () => {
     }
   });
 
+  test("keeps explicit Codex completion and approval signals authoritative", async () => {
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    try {
+      for (const signal of ["turn-complete", "awaiting-approval"] as const) {
+        const name = uniqueRunName(`notify-codex-explicit-${signal}`);
+        await saveRun({ name, backend: "codex", tmuxSession: `wux_${name}`, cwd: "/tmp", owner: "tester@host", createdAt: new Date().toISOString(), status: "running" });
+        expect(await runNotifyCli([name, signal], { stderr: { write: () => undefined } })).toBe(0);
+        expect(await readLatestBackendSignal(name)).toMatchObject({ signal });
+      }
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
   test("CLI notify dispatch accepts Codex-style event JSON", async () => {
     const temp = await tempState();
     const old = process.env.XDG_STATE_HOME;

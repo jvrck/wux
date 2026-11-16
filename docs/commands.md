@@ -211,6 +211,14 @@ latest trimmed `send` is accepted. Other Codex notifications, including
 auxiliary title events, remain recorded as `backend-signal` observations with
 their payload type and bounded provenance (identifiers, input count, and input
 digest), but cannot settle `wait` or `result` or create a completion sentinel.
+The explicit `wux notify <run> turn-complete` and `awaiting-approval` arguments
+remain operator assertions and take precedence over payload mapping.
+
+Two identical Codex sends with no accepted completion between them are ambiguous:
+a matching payload is recorded but does not settle `wait` or `result`, which
+returns `timeout` or `unknown` without `completedVia`. Verify the active turn
+through the pane or other ground truth, then send a distinct next turn or provide
+an explicit verified completion signal.
 
 Grok 1.0.62 has no wux-managed per-run hook. For Grok the honest ladder is
 **explicit hook > sentinel > timeout/unknown**: pane quietness never becomes

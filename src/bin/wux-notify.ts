@@ -141,9 +141,7 @@ async function resolveSignal(
     // managed hook with a reliable turn discriminator, so it alone fails closed.
     return args.signal ?? args.legacySignal ?? signalFromPayload(payload) ?? "turn-complete";
   }
-  if (args.explicitSignal) {
-    return args.signal === "awaiting-approval" ? args.signal : undefined;
-  }
+  if (args.explicitSignal) return args.signal;
   if (provenance.payloadType !== "agent-turn-complete" || provenance.inputMessageDigest === undefined) return undefined;
   const current = await readCurrentTurnInput(runName);
   return current.inputMessageDigest === provenance.inputMessageDigest && !current.ambiguousDuplicate ? "turn-complete" : undefined;
