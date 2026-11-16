@@ -296,7 +296,14 @@ export async function createSession(options: {
       }
       try {
         const launchCommand = options.startupGatePath
-          ? ["/bin/sh", "-c", 'while [ ! -e "$1" ]; do sleep 0.01; done; shift; exec "$@"', "wux-startup", options.startupGatePath, ...options.command]
+          ? [
+              "/bin/sh",
+              "-c",
+              'attempt=0; while [ ! -e "$1" ]; do attempt=$((attempt + 1)); if [ "$attempt" -ge 500 ]; then echo "wux: startup gate timed out waiting for readiness file" >&2; exit 1; fi; sleep 0.01; done; shift; exec "$@"',
+              "wux-startup",
+              options.startupGatePath,
+              ...options.command,
+            ]
           : options.command;
         const result = await runTmux(connection, [
           "-f",
@@ -427,11 +434,14 @@ const COMPOSER_LINE_RE = /^\s*(?:[│|╎┃┆┊]\s*)?[>›❯❱]/;
 // left as a stray ESC that defeats the anchored composer match.
 const ANSI_RE = /\x1b\[[0-9;?]*[ -\/]*[@-~]/g;
 const STRAY_ESC_RE = /\x1b/g;
+const CONTROL_EXCEPT_NEWLINE_RE = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g;
 // Minimum length for a prefix/continuation match, so short tokens do not match
 // incidental substrings of composer placeholder chrome.
 const MIN_COMPOSER_SIGNATURE = 4;
 // Marker prefix (+ optional trailing space) stripped to read the composer head.
 const COMPOSER_MARKER_RE = new RegExp(`${COMPOSER_LINE_RE.source}\\s?`);
+const DIALOG_CHOICE_RE = /^(?:\d+[.)]\s+|yes\b|no\b)/i;
+const TRUST_DIALOG_RE = /\b(?:trust|permission|approve|allow)\b/i;
 
 // Cross-backend "turn in flight" signal. Both Claude and Codex print "esc to
 // interrupt" in the status row while a turn is running (Claude: "· esc to
@@ -460,8 +470,20 @@ const SETTLE_BYTES_PER_STEP = 256;
 const SETTLE_STEP_MS = 40;
 const SETTLE_MAX_EXTRA_MS = 1_500;
 
-function stripAnsi(value: string): string {
-  return value.replace(ANSI_RE, "").replace(STRAY_ESC_RE, "");
+export function stripAnsi(value: string): string {
+  return value.replace(ANSI_RE, "").replace(STRAY_ESC_RE, "").replace(CONTROL_EXCEPT_NEWLINE_RE, "");
+}
+
+function hasRecognizedComposer(frame: string): boolean {
+  const clean = stripAnsi(frame);
+  // Claude/Codex trust prompts can put the selection cursor on a line beginning
+  // with the same glyph as a composer. Treat any trust wording or numbered/yes-no
+  // selection as a dialog, so it cannot authorize literal hotkeys.
+  if (TRUST_DIALOG_RE.test(clean)) return false;
+  return clean.split("\n").some((line) => {
+    if (!COMPOSER_LINE_RE.test(line)) return false;
+    return !DIALOG_CHOICE_RE.test(line.replace(COMPOSER_MARKER_RE, "").trim());
+  });
 }
 
 // Whether the pre-submit readiness gate is active. Default-ON; the kill-switch
@@ -763,30 +785,30 @@ export async function sendLiteral(session: string, text: string, options: SendLi
     sleep,
   };
   let captureFailed = false;
-  let capturedPane = false;
   const probe = (): Promise<string> =>
-    capture(session, CLASSIFY_TAIL)
-      .then((frame) => {
-        capturedPane = true;
-        return frame;
-      })
-      .catch(() => {
-        captureFailed = true;
-        return "";
-      });
+    capture(session, CLASSIFY_TAIL).catch(() => {
+      captureFailed = true;
+      return "";
+    });
 
   const before = await probe();
 
-  // Always type the literal (gate only the submit, never the type) so a deliberate
-  // send to a busy pane never loses bytes. The whole literal — newlines included —
-  // goes in one `-l`; a single Enter then submits it as ONE turn.
+  // A trust/startup dialog may interpret literal bytes as hotkeys before an
+  // explicit Enter is ever sent. On gated interactive backends, require a
+  // recognisable composer before sending ANY key. A failed capture stays
+  // uncertain; a successful dialog/blank capture is an explicit refusal.
+  if (gated) {
+    if (captureFailed) return { submission: "uncertain", retried: false };
+    if (!hasRecognizedComposer(before)) return { submission: "not-submitted", retried: false, reason: "no-composer" };
+  }
+
+  // Once a composer is positively observed, type the whole literal — newlines
+  // included — in one `-l`; a single Enter then submits it as ONE turn.
   await sendKeysOnce(connection, target, session, ["-l", text], "send text to");
 
   // Pre-submit readiness gate (gated backends only): wait, bounded, for the typed
-  // literal to render and the pane to be at-rest before Enter. Crucially, do NOT
-  // press Enter into a pane positively observed as busy OR one with no recognised
-  // composer. The former is a dropped no-op; the latter may be a startup or trust
-  // dialog. Both keep the literal visible without driving an unknown screen.
+  // literal to render and the pane to be at-rest before Enter. Do NOT press Enter
+  // into a pane positively observed as busy; that would be a dropped no-op.
   let preReady: ComposerReadiness = "ready";
   if (gated) {
     preReady = await waitForComposerReady(probe, text, probeOpts);
@@ -798,9 +820,6 @@ export async function sendLiteral(session: string, text: string, options: SendLi
 
   if (preReady === "busy") {
     submission = classifySubmission(before, await probe(), text, backend);
-  } else if (gated && preReady === "unknown") {
-    if (capturedPane) return { submission: "not-submitted", retried: false, reason: "no-composer" };
-    return { submission: captureFailed ? "uncertain" : "not-submitted", retried: false };
   } else {
     await sendKeysOnce(connection, target, session, ["Enter"], "submit text to");
     await sleep(settleMs);

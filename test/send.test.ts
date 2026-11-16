@@ -387,16 +387,18 @@ describe("sendLiteral readiness-gated path", () => {
   });
 
   test("withholds Enter from a pane without a recognisable composer", async () => {
-    const sent: string[][] = [];
-    const dialog = "Choose whether this folder is trusted";
-    const result = await sendLiteral("wux_x", "queued instruction", {
-      backend: "claude",
-      runner: recordingRunner(sent),
-      capture: frameCapture([dialog, dialog, dialog, dialog]),
-      ...FAST_GATE,
-    });
-    expect(result).toEqual({ submission: "not-submitted", retried: false, reason: "no-composer" });
-    expect(enterCount(sent)).toBe(0);
+    for (const frame of ["Do you trust this folder?\n❯ 1. Yes, proceed\n  2. No", ""]) {
+      const sent: string[][] = [];
+      const result = await sendLiteral("wux_x", "1\r y", {
+        backend: "claude",
+        runner: recordingRunner(sent),
+        capture: frameCapture([frame]),
+        ...FAST_GATE,
+      });
+      expect(result).toEqual({ submission: "not-submitted", retried: false, reason: "no-composer" });
+      // Neither dialog hotkeys nor carriage returns can reach a pre-composer pane.
+      expect(sent).toHaveLength(0);
+    }
   });
 
   test("labels a captured blank pane as no-composer", async () => {
@@ -408,7 +410,24 @@ describe("sendLiteral readiness-gated path", () => {
       ...FAST_GATE,
     });
     expect(result).toEqual({ submission: "not-submitted", retried: false, reason: "no-composer" });
+    expect(sent).toHaveLength(0);
     expect(enterCount(sent)).toBe(0);
+  });
+
+  test("best-effort submits when a composer was seen before a late literal render", async () => {
+    const sent: string[][] = [];
+    const ghost = '❯ Try "something else"';
+    const result = await sendLiteral("wux_x", "queued instruction", {
+      backend: "claude",
+      runner: recordingRunner(sent),
+      // A valid composer was observed before typing; the literal then renders too
+      // late for the bounded gate, so retain main's best-effort submit behavior.
+      capture: frameCapture(["❯ ", ghost, ghost, "✻ Working…\n❯ "]),
+      ...FAST_GATE,
+    });
+    expect(result).toEqual({ submission: "submitted", retried: false });
+    expect(sent.some((args) => args.includes("-l") && args.includes("queued instruction"))).toBe(true);
+    expect(enterCount(sent)).toBe(1);
   });
 
   test("multi-line literal is typed in ONE -l and submitted with ONE Enter", async () => {
@@ -486,6 +505,20 @@ describe("sendLiteral legacy/degrade paths", () => {
     });
     expect(result).toEqual({ submission: "submitted", retried: false });
     expect(captures).toBe(2); // before + one re-observe only (no readiness probe)
+    expect(enterCount(sent)).toBe(1);
+  });
+
+  test("readiness: false independently reverts to the legacy blind path", async () => {
+    const sent: string[][] = [];
+    const result = await sendLiteral("wux_x", "do the thing", {
+      backend: "claude",
+      readiness: false,
+      settleMs: 0,
+      sleep: async (): Promise<void> => {},
+      runner: recordingRunner(sent),
+      capture: frameCapture(["baseline", "thinking…"]),
+    });
+    expect(result).toEqual({ submission: "submitted", retried: false });
     expect(enterCount(sent)).toBe(1);
   });
 

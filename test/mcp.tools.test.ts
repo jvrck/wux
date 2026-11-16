@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { sendCommand } from "../src/commands/send";
 import { interruptCommand } from "../src/commands/interrupt";
@@ -158,50 +159,56 @@ describe("mcp tools — send payload shaping (unit)", () => {
 });
 
 describe("mcp tools — by stamping (unit, real run)", () => {
-  test("sendCommand({actor}) writes by:actor; CLI default stays the owner", async () => {
-    if (!(await hasTmux())) return;
-    const temp = await tempState();
-    const old = process.env.XDG_STATE_HOME;
-    process.env.XDG_STATE_HOME = temp.stateHome;
-    const name = uniqueRunName("stamp");
-    let created = false;
-    try {
-      // Keep this event-stamping integration test independent of the CI login
-      // shell's startup files while preserving an interactive shell through the
-      // interrupt; this still exercises the real tmux/send/interrupt lifecycle.
-      await runCommand({
-        backend: "shell",
-        name,
-        cwd: temp.root,
-        env: { ...process.env, SHELL: "/bin/bash" },
-        backendArgs: ["--noprofile", "--norc", "-i"],
-      });
-      created = true;
+  const bashAvailable = existsSync("/bin/bash");
+  const stampTest = bashAvailable ? test : test.skip;
+  stampTest(
+    bashAvailable
+      ? "sendCommand({actor}) writes by:actor; CLI default stays the owner"
+      : "sendCommand({actor}) writes by:actor; skipped because /bin/bash is unavailable",
+    async () => {
+      if (!(await hasTmux())) return;
+      const temp = await tempState();
+      const old = process.env.XDG_STATE_HOME;
+      process.env.XDG_STATE_HOME = temp.stateHome;
+      const name = uniqueRunName("stamp");
+      try {
+        // Keep this event-stamping integration test independent of the CI login
+        // shell's startup files while preserving an interactive shell through the
+        // interrupt; this still exercises the real tmux/send/interrupt lifecycle.
+        await runCommand({
+          backend: "shell",
+          name,
+          cwd: temp.root,
+          env: { ...process.env, SHELL: "/bin/bash" },
+          backendArgs: ["--noprofile", "--norc", "-i"],
+        });
 
-      await sendCommand({ name, text: "echo a", forceOwner: false, actor: "mcp:probe-x" });
-      let input = await lastInput(name);
-      expect(input.lastInputBy).toBe("mcp:probe-x");
+        await sendCommand({ name, text: "echo a", forceOwner: false, actor: "mcp:probe-x" });
+        let input = await lastInput(name);
+        expect(input.lastInputBy).toBe("mcp:probe-x");
 
-      await interruptCommand({ name, forceOwner: false, actor: "mcp:probe-y" });
-      input = await lastInput(name);
-      expect(input.lastInputBy).toBe("mcp:probe-y");
+        await interruptCommand({ name, forceOwner: false, actor: "mcp:probe-y" });
+        input = await lastInput(name);
+        expect(input.lastInputBy).toBe("mcp:probe-y");
 
-      // No actor -> default owner "user@host" (not an mcp: id).
-      await sendCommand({ name, text: "echo b", forceOwner: false });
-      input = await lastInput(name);
-      expect(input.lastInputBy).not.toBeNull();
-      expect((input.lastInputBy as string).startsWith("mcp:")).toBe(false);
+        // No actor -> default owner "user@host" (not an mcp: id).
+        await sendCommand({ name, text: "echo b", forceOwner: false });
+        input = await lastInput(name);
+        expect(input.lastInputBy).not.toBeNull();
+        expect((input.lastInputBy as string).startsWith("mcp:")).toBe(false);
 
-      await stopCommand(name, true, "mcp:probe-z");
-      input = await lastInput(name);
-      expect(input.lastInputBy).toBe("mcp:probe-z");
-      created = false; // stopped session already killed
-    } finally {
-      await killTmux(name);
-      process.env.XDG_STATE_HOME = old;
-      await temp.cleanup();
-    }
-  });
+        await stopCommand(name, true, "mcp:probe-z");
+        input = await lastInput(name);
+        expect(input.lastInputBy).toBe("mcp:probe-z");
+        // Cleanup is intentionally idempotent for a session already stopped above.
+        await expect(killTmux(name)).resolves.toBeUndefined();
+      } finally {
+        await killTmux(name);
+        process.env.XDG_STATE_HOME = old;
+        await temp.cleanup();
+      }
+    },
+  );
 });
 
 describe("mcp tools — full local loop (open → list → send → read → interrupt → view → stop)", () => {

@@ -192,6 +192,31 @@ describe("createSession scrollback wiring (unit, no tmux)", () => {
       await temp.cleanup();
     }
   });
+
+  test("bounds a startup gate that is never released", async () => {
+    const temp = await tempState();
+    const env = { XDG_STATE_HOME: temp.stateHome } as NodeJS.ProcessEnv;
+    const { calls, runner } = recordingRunner();
+    const startupGatePath = join(temp.root, "startup-ready");
+
+    try {
+      await createSession({
+        session: "wux_unit-startup-gate",
+        cwd: temp.root,
+        command: ["sleep", "600"],
+        logPath: join(temp.root, "pane.log"),
+        startupGatePath,
+        env,
+        runner,
+      });
+      const newSession = calls.find((call) => call.includes("new-session"));
+      expect(newSession).toBeDefined();
+      expect(newSession?.join(" ")).toContain("startup gate timed out waiting for readiness file");
+      expect(newSession?.join(" ")).toContain("attempt=0");
+    } finally {
+      await temp.cleanup();
+    }
+  });
 });
 
 describe("createSession scrollback (integration, real tmux)", () => {

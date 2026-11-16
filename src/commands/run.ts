@@ -6,7 +6,16 @@ import { appendEvent } from "../runtime/events";
 import { WuxError } from "../runtime/errors";
 import { createRunMeta, saveRun, type RunBackend } from "../runtime/runs";
 import { runDir, runsRoot } from "../runtime/state";
-import { ambientTmuxConnection, createSession, discoverSocketPath, hasSession, killSession, paneDeadStatus, setRemainOnExit } from "../runtime/tmux";
+import {
+  ambientTmuxConnection,
+  createSession,
+  discoverSocketPath,
+  hasSession,
+  killSession,
+  paneDeadStatus,
+  setRemainOnExit,
+  stripAnsi,
+} from "../runtime/tmux";
 
 export type { RunBackend } from "../runtime/runs";
 
@@ -82,14 +91,16 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
     if (observeClaudeStartup) {
       await writeFile(startupGatePath, "ready\n", "utf8");
       await delay(CLAUDE_STARTUP_CHECK_MS);
-      const live = await hasSession(meta.tmuxSession, connection);
-      const exitStatus = live ? await paneDeadStatus(meta.tmuxSession, connection) : "unknown";
-      if (!live || exitStatus !== undefined) {
+      const startupExitStatus = async (): Promise<string | undefined> => {
+        if (!(await hasSession(meta.tmuxSession, connection))) return "unknown";
+        return paneDeadStatus(meta.tmuxSession, connection);
+      };
+      const reportStartupExit = async (exitStatus: string): Promise<never> => {
         const paneTail = await paneLogTail(paneLog, STARTUP_PANE_TAIL_LINES);
         // Some tmux configurations retain a dead pane. It is still the session we
         // just created, so remove only that inert container after preserving its
         // log evidence; later commands must not mistake it for a live worker.
-        if (live) await killSession(meta.tmuxSession, connection);
+        if (await hasSession(meta.tmuxSession, connection)) await killSession(meta.tmuxSession, connection);
         const stoppedAt = new Date().toISOString();
         await saveRun({ ...meta, tmuxSocketPath, status: "stopped", stoppedAt, updatedAt: stoppedAt });
         await appendEvent(meta.name, {
@@ -102,8 +113,14 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
         });
         exitedDuringStartup = true;
         throw new WuxError(`exited-during-startup: ${meta.name}; pane tail:\n${paneTail || "(no pane output captured)"}`);
-      }
+      };
+      const exitStatus = await startupExitStatus();
+      if (exitStatus !== undefined) await reportStartupExit(exitStatus);
       await setRemainOnExit(meta.tmuxSession, false, connection);
+      // A Claude exit racing with the option change can otherwise leave a dead
+      // retained pane that status mistakes for a live worker.
+      const exitAfterRemainOff = await startupExitStatus();
+      if (exitAfterRemainOff !== undefined) await reportStartupExit(exitAfterRemainOff);
     }
     await appendEvent(meta.name, { type: "create", backend: meta.backend, owner: meta.owner });
   } catch (error) {
@@ -131,13 +148,19 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
 }
 
 function isClaudePrintMode(backendArgs: string[]): boolean {
-  return backendArgs.includes("--print") || backendArgs.includes("-p");
+  // Claude's help documents boolean `-p, --print`, not `--print=<value>` or
+  // bundled short flags. Stop at `--`: everything after it is backend input.
+  for (const arg of backendArgs) {
+    if (arg === "--") return false;
+    if (arg === "--print" || arg === "-p") return true;
+  }
+  return false;
 }
 
 async function paneLogTail(path: string, lines: number): Promise<string> {
   try {
     const raw = await readFile(path, "utf8");
-    return raw
+    return stripAnsi(raw)
       .split("\n")
       .filter((line) => line.length > 0)
       .slice(-lines)
