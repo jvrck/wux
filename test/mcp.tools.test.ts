@@ -166,7 +166,15 @@ describe("mcp tools — by stamping (unit, real run)", () => {
     const name = uniqueRunName("stamp");
     let created = false;
     try {
-      await runCommand({ backend: "shell", name, cwd: temp.root });
+      // Keep this event-stamping integration test independent of the CI login
+      // shell's startup files; `/bin/sh` is the shell backend's documented
+      // fallback and still exercises the real tmux/send/interrupt lifecycle.
+      await runCommand({
+        backend: "shell",
+        name,
+        cwd: temp.root,
+        env: { ...process.env, SHELL: "/bin/sh" },
+      });
       created = true;
 
       await sendCommand({ name, text: "echo a", forceOwner: false, actor: "mcp:probe-x" });
