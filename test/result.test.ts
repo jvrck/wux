@@ -103,6 +103,25 @@ describe("result", () => {
     });
   });
 
+  test("does not settle a Codex turn from an auxiliary title hook", async () => {
+    await withState(async (stateHome) => {
+      const name = "codex-title-hook";
+      await seedRun(stateHome, name, "codex");
+      await appendEvent(name, { type: "send", at: "2026-06-08T05:00:00.000Z", bytes: 12 });
+      await appendBackendSignal(name, {
+        signal: "turn-complete",
+        at: "2026-06-08T05:00:01.000Z",
+        turnId: "auxiliary-title-turn",
+        lastAssistantMessage: '{"title":"Summarize the changes"}',
+      });
+
+      const envelope = await resultCommand({ name });
+      expect(envelope.outcome).toBe("unknown");
+      expect(envelope.completedVia).toBeUndefined();
+      expect(envelope.lastAssistantMessage).toBeUndefined();
+    });
+  });
+
   test("reports blocked with completedVia hook on an awaiting-approval signal", async () => {
     await withState(async (stateHome) => {
       const name = "codex-blocked";
