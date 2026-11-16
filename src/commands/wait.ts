@@ -85,7 +85,10 @@ export async function resolveSignalSnapshot(meta: SnapshotMeta, probes: Snapshot
   // record superseded by a newer `send`/`interrupt` is treated as stale and
   // ignored, so a fresh turn never inherits a prior turn's outcome (no fabrication).
   const settled = await readSettled(meta.name);
-  if (settled) {
+  // Quiescence is valid completion evidence only for shell. Older versions could
+  // persist done/quiescence for interactive backends; preserve timeout/blocked
+  // settles from those versions, but never replay that false completion.
+  if (settled && (isShell || settled.completedVia !== "quiescence")) {
     return { outcome: settled.outcome, ...(settled.completedVia !== undefined ? { completedVia: settled.completedVia } : {}), observation };
   }
 
@@ -202,17 +205,15 @@ export async function waitCommand(options: WaitOptions): Promise<WaitResult> {
     }
     lastSampleAt = observedAt;
 
-    if (idleAccumulatedMs >= idleMs && meta.backend !== "grok") {
+    if (idleAccumulatedMs >= idleMs && meta.backend === "shell") {
       // Pane silence != process idle. A silent-but-busy shell run (e.g.
       // `yes > /dev/null`, a compute writing only to a file) leaves the pane
       // byte-static, so frame-hash quiescence alone would falsely report `done`.
-      // Before declaring quiescence for a shell run, confirm the pane's
-      // foreground process is the shell itself (prompt returned). If a foreground
-      // child is still running, reset the idle accumulator and keep waiting; the
-      // run then resolves `timeout` rather than a false `done`. claude/codex
-      // ladder behavior is unchanged — they never reach this rung silently busy
-      // because their hook/sentinel rungs run first.
-      if (meta.backend === "shell" && (await paneActivity(meta.tmuxSession)) === "foreground-busy") {
+      // Before declaring quiescence, confirm the pane's foreground process is
+      // the shell itself (prompt returned). If a foreground child is still
+      // running, reset the idle accumulator and keep waiting; the run then
+      // resolves `timeout` rather than a false `done`.
+      if ((await paneActivity(meta.tmuxSession)) === "foreground-busy") {
         idleAccumulatedMs = 0;
       } else {
         return settle({

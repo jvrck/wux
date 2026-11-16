@@ -143,15 +143,16 @@ runs you drive yourself by following those pointers — plus a cooperative
 pane-log sentinel and `read --json`. There are no git/gh/PR/test connectors.
 
 The `completedVia` ladder (`hook` | `sentinel` | `quiescence`) never advertises
-more than a backend can deliver: `claude` and `codex` emit true turn-complete
-hook signals, while the `shell` backend has process-aware **quiescence** (no
-completion hook) — frame-hash silence gated on a foreground-process probe that
-confirms via tmux `#{pane_pid}`/`#{pane_current_command}` that the shell's prompt
-has returned before declaring `done`, so a silent-but-busy run resolves `timeout`
-rather than a false `done` (precise provenance in
+more than a backend can deliver: `claude` and `codex` require a current-turn hook
+or sentinel signal, while the `shell` backend has process-aware **quiescence**
+(no completion hook) — frame-hash silence gated on a foreground-process probe
+that confirms via tmux `#{pane_pid}`/`#{pane_current_command}` that the shell's
+prompt has returned before declaring `done`, so a silent-but-busy run resolves
+`timeout` rather than a false `done` (precise provenance in
 [docs/commands.md](docs/commands.md)). Wux arbitrates hook signal > run-dir
-`turn-complete` sentinel file > process-aware quiescence, with tmux session
-liveness as the backstop, and reports which rung fired as `completedVia`. If the
+`turn-complete` sentinel file > shell process-aware quiescence, with tmux session
+liveness as the backstop, and reports which rung fired as `completedVia`. Without
+a Claude or Codex signal, `wait` reports `timeout` or `unknown`, not done; if the
 session is gone with no completion signal, `wait` reports `unknown`, not done, and
 leaves `completedVia` unset.
 

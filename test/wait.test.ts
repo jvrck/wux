@@ -169,7 +169,7 @@ describe("wait", () => {
     expect(result).toMatchObject({ name: "probe-unknown", outcome: "done", completedVia: "quiescence" });
   });
 
-  test("the pane-activity probe is not consulted for claude/codex quiescence", async () => {
+  test("the pane-activity probe is not consulted while a static Codex pane times out", async () => {
     const time = clock();
     let activityCalls = 0;
 
@@ -191,9 +191,32 @@ describe("wait", () => {
       readTurnInputAt: async () => null,
     });
 
-    // claude/codex ladder behavior is unchanged: the shell-only probe is skipped.
-    expect(result).toMatchObject({ name: "codex-quiet", outcome: "done", completedVia: "quiescence" });
+    expect(result).toMatchObject({ name: "codex-quiet", outcome: "timeout" });
+    expect(result.completedVia).toBeUndefined();
     expect(activityCalls).toBe(0);
+  });
+
+  test("claude and codex static panes without a current-turn signal time out", async () => {
+    for (const backend of ["claude", "codex"] as const) {
+      const time = clock();
+      const name = `quiet-${backend}-${process.pid}-${Date.now()}`;
+      const result = await waitCommand({
+        name,
+        idleMs: 500,
+        timeoutMs: 1_000,
+        pollIntervalMs: 250,
+        now: time.now,
+        sleep: time.sleep,
+        loadRun: async () => ({ name, tmuxSession: `wux_${name}`, backend }),
+        hasSession: async () => true,
+        capturePane: async () => "static interactive pane\n",
+        appendSettled: async () => undefined,
+        readTurnInputAt: async () => null,
+      });
+
+      expect(result).toMatchObject({ name, outcome: "timeout" });
+      expect(result.completedVia).toBeUndefined();
+    }
   });
 
   test("a quiet grok pane times out rather than reporting quiescence", async () => {
@@ -421,7 +444,7 @@ describe("wait", () => {
     }
   });
 
-  test("ignores hook and sentinel signals older than the latest turn input", async () => {
+  test("times out when hook and sentinel signals are older than the latest turn input", async () => {
     const temp = await tempState();
     const old = process.env.XDG_STATE_HOME;
     process.env.XDG_STATE_HOME = temp.stateHome;
@@ -450,9 +473,9 @@ describe("wait", () => {
 
       expect(result).toMatchObject({
         name: "stale-hook",
-        outcome: "done",
-        completedVia: "quiescence",
+        outcome: "timeout",
       });
+      expect(result.completedVia).toBeUndefined();
     } finally {
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();
