@@ -635,6 +635,9 @@ describe("dispatch", () => {
     const uncertain = __test.renderSendResult({ ...base, submission: "uncertain", retried: false }, false);
     expect(uncertain.stdout).toBeUndefined();
     expect(uncertain.stderr).toContain("uncertain");
+    const truncated = __test.renderSendResult({ ...base, submission: "truncated", retried: false }, false);
+    expect(truncated.stdout).toBeUndefined();
+    expect(truncated.stderr).toContain("head was lost");
     const json = __test.renderSendResult({ ...base, submission: "not-submitted", retried: true }, true);
     expect(json.stderr).toBeUndefined();
     expect(JSON.parse(json.stdout as string)).toEqual({ name: "r", submission: "not-submitted", retried: true, bytes: 5 });

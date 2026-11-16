@@ -302,6 +302,22 @@ describe("classifySubmission", () => {
     const after = ["❯ please review this long prompt that wraps and whose wrap", "> row begins with a marker glyph here", "────", "  ⏵⏵ bypass permissions on · esc to interrupt"].join("\n");
     expect(classifySubmission("❯ ", after, text, "claude")).toBe("not-submitted");
   });
+
+  test("does not resend a head-truncated multi-line paste", async () => {
+    const sent: string[][] = [];
+    const text = "first sent line\nsecond sent line\nthird sent line";
+    const truncated = await readFile(join(import.meta.dir, "fixtures", "composer", "claude-head-truncated-transcript.txt"), "utf8");
+    const result = await sendLiteral("wux_x", text, {
+      backend: "claude",
+      runner: recordingRunner(sent),
+      capture: frameCapture(["● Earlier assistant output\n❯ ", truncated]),
+      readiness: false,
+      settleMs: 0,
+    });
+
+    expect(result).toEqual({ submission: "truncated", retried: false });
+    expect(enterCount(sent)).toBe(1);
+  });
 });
 
 // Deterministic readiness-gate knobs: no real time, a small fixed sample budget,

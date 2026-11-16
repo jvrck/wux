@@ -129,7 +129,7 @@ are not completion evidence.
   `wux send <run> -- '--help me'`. Without the `--` terminator, leading-dash text
   is rejected as an unknown option.
 - **Gate on `wait` + ground truth, never on the send verdict.** `send` returns an
-  advisory verdict — `submitted | uncertain | not-submitted` — computed by
+  advisory verdict — `submitted | uncertain | not-submitted | truncated` — computed by
   diffing the pane around the keystroke. It answers *did the keystroke land?*, not
   *did the turn finish?* In the eval, **every** send under-claimed (reported a
   non-`submitted` verdict) while actually succeeding. Treat a non-`submitted`

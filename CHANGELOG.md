@@ -12,6 +12,8 @@ intentionally not reproduced here.
 
 ### Fixed
 
+- Report a head-truncated multi-line interactive paste as `truncated` rather
+  than `submitted`; wux does not resend the visible tail.
 - Made interactive Claude startup exits fail with a pane tail instead of
   reporting a successful run start.
 - Made Claude and Codex `wait` require hook or sentinel evidence instead of

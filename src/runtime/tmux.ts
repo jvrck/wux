@@ -394,7 +394,7 @@ export async function killSession(session: string, connection: TmuxConnection = 
 
 // Honest-submit verdict. This is a HEURISTIC over the pane, not an end-of-turn
 // signal: it answers "did the prompt submit", not "did the turn finish".
-export type Submission = "submitted" | "uncertain" | "not-submitted";
+export type Submission = "submitted" | "uncertain" | "not-submitted" | "truncated";
 
 export interface SubmitResult {
   submission: Submission;
@@ -612,8 +612,8 @@ export function classifySubmission(before: string, after: string, text: string, 
   if (anchor.presence === "held") return "not-submitted";
   if (anchor.presence === "partial") return "uncertain";
 
-  const stillPresent = needles.some((needle) => afterClean.includes(needle));
-  if (!stillPresent) return "submitted";
+  const transcriptVerdict = classifyTranscriptEvidence(afterClean, needles);
+  if (transcriptVerdict !== undefined) return transcriptVerdict;
 
   // Text lingers in the frame but not on a composer line. Without a usable
   // baseline (before-capture failed/empty) we cannot honestly say the frame
@@ -621,6 +621,37 @@ export function classifySubmission(before: string, after: string, text: string, 
   const beforeClean = stripAnsi(before);
   if (beforeClean.trim().length === 0) return "uncertain";
   return beforeClean !== afterClean ? "submitted" : "uncertain";
+}
+
+// A transcript echo is submission evidence only when the whole literal appears
+// in order above the live composer. A tail without its head is a distinct,
+// honest failure mode: retrying would duplicate the visible tail.
+function classifyTranscriptEvidence(afterClean: string, needles: string[]): Submission | undefined {
+  const lines = afterClean.split("\n");
+  let composerIndex = lines.length;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (COMPOSER_LINE_RE.test(lines[index])) {
+      composerIndex = index;
+      break;
+    }
+  }
+  if (composerIndex === lines.length) return undefined;
+  const transcript = lines.slice(0, composerIndex);
+  const contains = (needle: string): boolean => transcript.some((line) => line.includes(needle));
+  let nextLine = 0;
+  const wholeTextInOrder = needles.every((needle) => {
+    const index = transcript.findIndex((line, candidate) => candidate >= nextLine && line.includes(needle));
+    if (index === -1) return false;
+    nextLine = index + 1;
+    return true;
+  });
+  if (wholeTextInOrder) return "submitted";
+
+  const headPresent = contains(needles[0]);
+  const tailPresent = contains(needles.at(-1)!);
+  if (!headPresent && tailPresent) return "truncated";
+  if (needles.some(contains)) return "uncertain";
+  return undefined;
 }
 
 // Readiness verdict for the pre-submit gate. Distinct from classifySubmission

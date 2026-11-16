@@ -96,7 +96,10 @@ export function sendPayload(resolved: ResolvedTarget, result: SendResult): Recor
     submitted,
   };
   if (!submitted) {
-    payload.warning = `${result.name} may not have submitted (${result.submission}${result.retried ? ", retried" : ""}); this is not a clean success`;
+    payload.warning =
+      result.submission === "truncated"
+        ? `${result.name} paste head was lost (truncated); this is not a clean success`
+        : `${result.name} may not have submitted (${result.submission}${result.retried ? ", retried" : ""}); this is not a clean success`;
   }
   return payload;
 }

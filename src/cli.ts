@@ -134,8 +134,9 @@ interprets these args. Example headless launch:
   wux send <run-name> [--force-owner] [--json] <text>
 
 Sends literal text plus Enter to a run, then reports whether the backend accepted
-the submit. The verdict (submitted | uncertain | not-submitted) is a heuristic
-over the pane, not an end-of-turn signal; a non-submitted send retries Enter once.
+the submit. The verdict (submitted | uncertain | not-submitted | truncated) is a
+heuristic over the pane, not an end-of-turn signal; a non-submitted send retries
+Enter once, while a truncated paste never retries its visible tail.
 Options must precede <text>; use -- before literal text that starts with an
 option-like value. --json prints {name, submission, retried, bytes}.
 `,
@@ -714,6 +715,9 @@ export function renderSendResult(result: SendResult, json: boolean): { stdout?: 
   const retried = result.retried ? ", retried" : "";
   if (result.submission === "submitted") {
     return { stdout: `sent ${result.bytes} bytes to ${result.name} (submitted${retried})\n` };
+  }
+  if (result.submission === "truncated") {
+    return { stderr: `wux: warning: ${result.name} paste head was lost (truncated); this is not a clean success\n` };
   }
   return { stderr: `wux: warning: ${result.name} may not have submitted (${result.submission}${retried})\n` };
 }

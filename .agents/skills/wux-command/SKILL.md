@@ -36,7 +36,7 @@ steer the wrong host.
 
 ## Honesty
 
-- `send` returns `submitted`, `uncertain`, or `not-submitted`. Surface that
+- `send` returns `submitted`, `uncertain`, `not-submitted`, or `truncated`. Surface that
   `submission` verdict exactly. A non-`submitted` result is a WARNING, never a
   clean "sent" success.
 - `read` is a raw, labeled pane scrape. It can be truncated by `tail`, can contain
@@ -64,7 +64,7 @@ for f in .claude/skills/wux-command/SKILL.md .agents/skills/wux-command/SKILL.md
   grep -Eq '^allowed-tools:' "$f"
   grep -Eq '^disable-model-invocation:[[:space:]]*true' "$f"
   grep -Eq 'open|send|read|interrupt|stop|view' "$f"
-  grep -Eq 'submitted|uncertain|not-submitted' "$f"
+  grep -Eq 'submitted|uncertain|not-submitted|truncated' "$f"
   grep -Eqi 'secret|truncat' "$f"
 done
 ```
