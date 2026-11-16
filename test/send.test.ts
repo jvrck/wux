@@ -184,6 +184,19 @@ describe("classifySubmission", () => {
     expect(classifySubmission("> printf 'hi'", "working…\n> ", "printf 'hi'", "claude")).toBe("submitted");
   });
 
+  test("classifies ordered whole-text transcript evidence without accepting a truncated paste", async () => {
+    const text = "first sent line\nsecond sent line\nthird sent line";
+    const fixture = await readFile(join(import.meta.dir, "fixtures", "composer", "claude-head-truncated-transcript.txt"), "utf8");
+    const before = "● Earlier assistant output\n❯ ";
+
+    expect(classifySubmission(before, fixture, text, "claude")).toBe("truncated");
+    expect(classifySubmission(before, ["first sent line", "❯ ", "────"].join("\n"), text, "claude")).toBe("uncertain");
+    expect(classifySubmission(before, ["first sent line", "third sent line", "❯ ", "────"].join("\n"), text, "claude")).toBe("uncertain");
+    expect(classifySubmission(before, ["first sent line", "second sent line", "third sent line", "❯ ", "────"].join("\n"), text, "claude")).toBe("submitted");
+    expect(classifySubmission(before, ["second sent line", "unrelated output", "second sent line", "❯ ", "────"].join("\n"), text, "claude")).toBe("uncertain");
+    expect(classifySubmission(before, ["❯ first sent line", "second sent line", "third sent line"].join("\n"), text, "claude")).toBe("not-submitted");
+  });
+
   test("an unchanged frame with the text off the composer is uncertain", () => {
     const frame = "printf 'hi' echoed somewhere in the body";
     expect(classifySubmission(frame, frame, "printf 'hi'", "claude")).toBe("uncertain");
