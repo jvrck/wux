@@ -615,7 +615,7 @@ export function classifySubmission(before: string, after: string, text: string, 
   const beforeClean = stripAnsi(before);
   if (beforeClean.trim().length === 0 || beforeClean === afterClean) return "uncertain";
 
-  const transcriptVerdict = classifyTranscriptEvidence(afterClean, needles);
+  const transcriptVerdict = classifyTranscriptEvidence(beforeClean, afterClean, needles);
   if (transcriptVerdict !== undefined) return transcriptVerdict;
 
   // Claude/Codex no longer promote a merely changed frame to `submitted`.
@@ -629,11 +629,28 @@ export function classifySubmission(before: string, after: string, text: string, 
   return beforeClean !== afterClean ? "submitted" : "uncertain";
 }
 
-// A transcript echo is submission evidence only when the whole literal appears
-// in order above the live composer. A tail without its head is a distinct,
-// honest failure mode: retrying would duplicate the visible tail.
-function classifyTranscriptEvidence(afterClean: string, needles: string[]): Submission | undefined {
-  const lines = afterClean.split("\n");
+// A transcript echo is submission evidence only when a complete ordered
+// occurrence is NEW relative to the pre-send frame. A tail without its head is
+// distinct, but its tail must be new too: historical text never proves delivery
+// of this send.
+function classifyTranscriptEvidence(beforeClean: string, afterClean: string, needles: string[]): Submission | undefined {
+  const beforeTranscript = transcriptLines(beforeClean);
+  const afterTranscript = transcriptLines(afterClean);
+  if (orderedOccurrenceCount(afterTranscript, needles) > orderedOccurrenceCount(beforeTranscript, needles)) return "submitted";
+
+  const head = needles[0];
+  const tail = needles.at(-1)!;
+  const afterTailCount = matchingLineCount(afterTranscript, tail);
+  const beforeTailCount = matchingLineCount(beforeTranscript, tail);
+  if (afterTailCount > beforeTailCount && matchingLineCount(afterTranscript, head) <= matchingLineCount(beforeTranscript, head)) {
+    return "truncated";
+  }
+  if (needles.some((needle) => matchingLineCount(afterTranscript, needle) > matchingLineCount(beforeTranscript, needle))) return "uncertain";
+  return undefined;
+}
+
+function transcriptLines(frame: string): string[] {
+  const lines = frame.split("\n");
   let composerIndex = lines.length;
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     if (COMPOSER_LINE_RE.test(lines[index])) {
@@ -644,22 +661,40 @@ function classifyTranscriptEvidence(afterClean: string, needles: string[]): Subm
   // When the TUI redraw omits its composer marker entirely, the whole captured
   // frame is the only available transcript evidence. Do not let that omission
   // revive the old changed-frame success path.
-  const transcript = lines.slice(0, composerIndex);
-  const contains = (needle: string): boolean => transcript.some((line) => line.includes(needle));
-  let nextLine = 0;
-  const wholeTextInOrder = needles.every((needle) => {
-    const index = transcript.findIndex((line, candidate) => candidate >= nextLine && line.includes(needle));
-    if (index === -1) return false;
-    nextLine = index + 1;
-    return true;
-  });
-  if (wholeTextInOrder) return "submitted";
+  return lines.slice(0, composerIndex);
+}
 
-  const headPresent = contains(needles[0]);
-  const tailPresent = contains(needles.at(-1)!);
-  if (!headPresent && tailPresent) return "truncated";
-  if (needles.some(contains)) return "uncertain";
-  return undefined;
+function matchingLineCount(lines: string[], needle: string): number {
+  return lines.filter((line) => line.includes(needle)).length;
+}
+
+function orderedOccurrenceCount(lines: string[], needles: string[]): number {
+  let count = 0;
+  let start = 0;
+  while (start < lines.length) {
+    let occurrenceEnd: number | undefined;
+    for (let first = start; first < lines.length; first += 1) {
+      if (!lines[first].includes(needles[0])) continue;
+      let cursor = first + 1;
+      let matched = true;
+      for (const needle of needles.slice(1)) {
+        const index = lines.findIndex((line, candidate) => candidate >= cursor && line.includes(needle));
+        if (index === -1) {
+          matched = false;
+          break;
+        }
+        cursor = index + 1;
+      }
+      if (matched) {
+        occurrenceEnd = cursor;
+        break;
+      }
+    }
+    if (occurrenceEnd === undefined) return count;
+    count += 1;
+    start = occurrenceEnd;
+  }
+  return count;
 }
 
 // Readiness verdict for the pre-submit gate. Distinct from classifySubmission

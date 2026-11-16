@@ -16,6 +16,8 @@ intentionally not reproduced here.
   than `submitted`; wux does not resend the visible tail.
 - Make Claude/Codex collapsed-paste placeholders and other changed frames
   without whole-text evidence report `uncertain`, not `submitted`.
+- Require Claude/Codex transcript evidence to be newly present after the send,
+  so an identical historical prompt cannot be mistaken for a new submission.
 - Made interactive Claude startup exits fail with a pane tail instead of
   reporting a successful run start.
 - Made Claude and Codex `wait` require hook or sentinel evidence instead of

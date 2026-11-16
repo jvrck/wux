@@ -201,6 +201,42 @@ describe("send", () => {
       await temp.cleanup();
     }
   });
+
+  test("a real collapsed Codex paste cannot reuse an identical historical prompt", async () => {
+    if (!(await hasTmux())) return;
+    const temp = await tempState();
+    const oldStateHome = process.env.XDG_STATE_HOME;
+    const oldReadiness = process.env.WUX_SEND_READINESS;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const bin = join(temp.root, "bin");
+    const fakeCodex = join(bin, "codex");
+    const ready = join(temp.root, "fake-ready");
+    const name = uniqueRunName("send-stale-codex");
+    const text = "first sent line\nsecond sent line\nthird sent line";
+    let created = false;
+
+    try {
+      await mkdir(bin);
+      await writeFile(
+        fakeCodex,
+        `#!/bin/sh\nprintf 'first sent line\\nsecond sent line\\nthird sent line\\n› \\n'\n: > ${JSON.stringify(ready)}\nstty raw -echo\ndd bs=1 count=1 of=/dev/null 2>/dev/null\nprintf '› [Pasted text #1 +2 lines]\\n'\nsleep 30\n`,
+        "utf8",
+      );
+      await chmod(fakeCodex, 0o755);
+      await runCommand({ backend: "codex", name, cwd: temp.root, env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` } });
+      created = true;
+      await waitForPath(ready);
+      process.env.WUX_SEND_READINESS = "0";
+
+      expect(await sendCommand({ name, text, forceOwner: false })).toMatchObject({ submission: "uncertain", retried: false });
+    } finally {
+      if (created) await killTmux(name);
+      if (oldReadiness === undefined) delete process.env.WUX_SEND_READINESS;
+      else process.env.WUX_SEND_READINESS = oldReadiness;
+      process.env.XDG_STATE_HOME = oldStateHome;
+      await temp.cleanup();
+    }
+  });
 });
 
 describe("classifySubmission", () => {
@@ -258,6 +294,22 @@ describe("classifySubmission", () => {
     expect(classifySubmission(before, tailWithoutComposer, text, "claude")).toBe("truncated");
     expect(classifySubmission(before, collapsedComposer, text, "claude")).toBe("uncertain");
     expect(classifySubmission(before, collapsedTranscript, text, "claude")).toBe("uncertain");
+  });
+
+  test("requires transcript evidence to be newer than an identical prompt in history", () => {
+    const text = "first sent line\nsecond sent line\nthird sent line";
+    const before = ["first sent line", "second sent line", "third sent line", "❯ "].join("\n");
+    const collapsed = ["first sent line", "second sent line", "third sent line", "❯ [Pasted text #1 +2 lines]"].join("\n");
+    const echoed = ["first sent line", "second sent line", "third sent line", "first sent line", "second sent line", "third sent line", "❯ "].join("\n");
+    const staleTailBefore = ["third sent line", "❯ "].join("\n");
+    const staleTailCollapsed = ["third sent line", "❯ [Pasted text #1 +2 lines]"].join("\n");
+    const partialHistory = ["first sent line", "❯ "].join("\n");
+    const completedAfterPartialHistory = ["first sent line", "first sent line", "second sent line", "third sent line", "❯ "].join("\n");
+
+    expect(classifySubmission(before, collapsed, text, "claude")).toBe("uncertain");
+    expect(classifySubmission(before, echoed, text, "claude")).toBe("submitted");
+    expect(classifySubmission(staleTailBefore, staleTailCollapsed, text, "claude")).toBe("uncertain");
+    expect(classifySubmission(partialHistory, completedAfterPartialHistory, text, "claude")).toBe("submitted");
   });
 
   test("an unchanged frame with the text off the composer is uncertain", () => {
