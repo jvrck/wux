@@ -167,13 +167,14 @@ describe("mcp tools — by stamping (unit, real run)", () => {
     let created = false;
     try {
       // Keep this event-stamping integration test independent of the CI login
-      // shell's startup files; `/bin/sh` is the shell backend's documented
-      // fallback and still exercises the real tmux/send/interrupt lifecycle.
+      // shell's startup files while preserving an interactive shell through the
+      // interrupt; this still exercises the real tmux/send/interrupt lifecycle.
       await runCommand({
         backend: "shell",
         name,
         cwd: temp.root,
-        env: { ...process.env, SHELL: "/bin/sh" },
+        env: { ...process.env, SHELL: "/bin/bash" },
+        backendArgs: ["--noprofile", "--norc", "-i"],
       });
       created = true;
 
