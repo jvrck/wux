@@ -69,27 +69,36 @@ describe("claude backend", () => {
     process.env.XDG_STATE_HOME = temp.stateHome;
     const bin = join(temp.root, "bin");
     const fakeClaude = join(bin, "claude");
+    const started = join(temp.root, "claude-started");
+    const exitNow = join(temp.root, "claude-exit");
     const name = uniqueRunName("claude-startup-exit");
 
     try {
       await mkdir(bin);
-      await writeFile(fakeClaude, "#!/bin/sh\nsleep 0.1\nprintf 'startup dialog evidence\\n'\nsleep 0.2\nexit 7\n", "utf8");
+      await writeFile(
+        fakeClaude,
+        `#!/bin/sh\nprintf 'started\\n' > ${JSON.stringify(started)}\nwhile [ ! -f ${JSON.stringify(exitNow)} ]; do sleep 0.01; done\nprintf 'startup dialog evidence\\n'\nexit 7\n`,
+        "utf8",
+      );
       await chmod(fakeClaude, 0o755);
 
+      const run = runCommand({
+        backend: "claude",
+        name,
+        cwd: temp.root,
+        env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, WUX_NOTIFY_PATH: "/tmp/wux-notify" },
+      });
+      await waitForArgv(started);
+      await writeFile(exitNow, "exit\n", "utf8");
       await expect(
-        runCommand({
-          backend: "claude",
-          name,
-          cwd: temp.root,
-          env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, WUX_NOTIFY_PATH: "/tmp/wux-notify" },
-        }),
+        run,
       ).rejects.toThrow(/exited-during-startup.*startup dialog evidence/s);
       const events = await readFile(join(runDir(name), "events.jsonl"), "utf8");
       expect(events).toContain('"result":"exited-during-startup"');
       expect(events).toContain("startup dialog evidence");
       expect(await hasSession(`wux_${name}`)).toBe(false);
     } finally {
-      if (await hasSession(`wux_${name}`)) await killTmux(name);
+      await killTmux(name);
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();
     }

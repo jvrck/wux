@@ -147,6 +147,10 @@ If the dialog remains open, `wux send` withholds Enter and returns
 `not-submitted` with `reason: "no-composer"`; wux never accepts or dismisses the
 dialog.
 
+The startup check is a fixed, one-shot observation (about half a second) inside
+`run`, not a watcher. An exit after that observation is not classified as a
+startup exit; inspect `status` or the persisted pane log instead.
+
 `shell` keeps the unconditional fast path, and any other/unknown backend falls back
 to the legacy blind type+Enter. Claude and Codex never use that fallback: their
 Enter key remains withheld until a ready composer is observed.
