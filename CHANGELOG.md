@@ -16,6 +16,8 @@ intentionally not reproduced here.
   reporting a successful run start.
 - Made Claude and Codex `wait` require hook or sentinel evidence instead of
   treating a quiet pane as a completed turn.
+- Made Codex hook completion fail closed and bind to the latest trimmed sent
+  input, so auxiliary title events remain observable without settling a turn.
 
 ## 2026.10.31
 

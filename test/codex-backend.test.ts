@@ -4,12 +4,29 @@ import { delimiter, join } from "node:path";
 import { backendCommand } from "../src/backends";
 import { codexCommand } from "../src/backends/codex";
 import { runCommand } from "../src/commands/run";
+import { resultCommand } from "../src/commands/result";
+import { waitCommand } from "../src/commands/wait";
+import { appendEvent, inputMessageDigest, readEvents } from "../src/runtime/events";
 import { runDir } from "../src/runtime/state";
+import { runProcess } from "../src/runtime/process";
 import { hasSession } from "../src/runtime/tmux";
 import { hasTmux, killTmux, tempState, waitForArgv } from "./helpers";
 
 function uniqueRunName(prefix: string): string {
   return `${prefix}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+async function waitForPath(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      await stat(path);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for ${path}`);
 }
 
 describe("codex backend", () => {
@@ -127,6 +144,69 @@ describe("codex backend", () => {
       // arg AND the forwarded passthrough as discrete argv tokens through tmux.
       const observedArgv = await waitForArgv(argvLog, 3);
       expect(observedArgv).toEqual(["-c", `notify=${JSON.stringify(["/tmp/wux-notify", name])}`, "--full-auto"]);
+    } finally {
+      if (created) await killTmux(name);
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("a fake Codex title hook leaves a real run unsettled until its matching completion", async () => {
+    if (!(await hasTmux())) return;
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const bin = join(temp.root, "bin");
+    const fakeCodex = join(bin, "codex");
+    const notifyWrapper = join(bin, "wux-notify");
+    const gate = join(temp.root, "emit-title");
+    const titleSent = join(temp.root, "title-sent");
+    const notifyPath = join(process.cwd(), "src", "bin", "wux-notify.ts");
+    const name = uniqueRunName("codex-title-probe");
+    const prompt = "  Reply with WUX_REAL_REPLY \n";
+    const normalizedPrompt = "Reply with WUX_REAL_REPLY";
+    const title = JSON.stringify({ type: "agent-turn-complete", "turn-id": "title-turn", "input-messages": [`Generate a concise title for: ${normalizedPrompt}`], "last-assistant-message": '{"title":"Reply"}' });
+    const real = JSON.stringify({ type: "agent-turn-complete", "turn-id": "real-turn", "input-messages": [normalizedPrompt], "last-assistant-message": "WUX_REAL_REPLY" });
+    let created = false;
+
+    try {
+      await mkdir(bin);
+      await writeFile(
+        notifyWrapper,
+        `#!/bin/sh\nexport XDG_STATE_HOME=${JSON.stringify(temp.stateHome)}\nexec ${JSON.stringify(notifyPath)} "$@"\n`,
+        "utf8",
+      );
+      await chmod(notifyWrapper, 0o755);
+      await writeFile(
+        fakeCodex,
+        `#!/bin/sh\nwhile [ ! -e ${JSON.stringify(gate)} ]; do sleep 0.01; done\n${JSON.stringify(notifyWrapper)} ${JSON.stringify(name)} ${JSON.stringify(title)}\n: > ${JSON.stringify(titleSent)}\nsleep 30\n`,
+        "utf8",
+      );
+      await chmod(fakeCodex, 0o755);
+
+      await runCommand({
+        backend: "codex",
+        name,
+        cwd: temp.root,
+        env: {
+          ...process.env,
+          PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
+          WUX_NOTIFY_PATH: notifyWrapper,
+        },
+      });
+      created = true;
+      await appendEvent(name, { type: "send", inputMessageDigest: inputMessageDigest(prompt) });
+      await writeFile(gate, "ready\n", "utf8");
+      await waitForPath(titleSent);
+
+      expect(await resultCommand({ name })).toMatchObject({ outcome: "unknown" });
+      expect(await waitCommand({ name, idleMs: 10, timeoutMs: 40, pollIntervalMs: 10 })).toMatchObject({ outcome: "timeout" });
+      const titleEvent = (await readEvents(name)).find((event) => event.type === "backend-signal" && event.turnId === "title-turn");
+      expect(titleEvent).toMatchObject({ payloadType: "agent-turn-complete", inputMessagesCount: 1 });
+      expect(titleEvent?.signal).toBeUndefined();
+
+      expect((await runProcess([notifyWrapper, name, real], { env: { ...process.env, XDG_STATE_HOME: temp.stateHome } })).code).toBe(0);
+      expect(await resultCommand({ name })).toMatchObject({ outcome: "done", completedVia: "hook", lastAssistantMessage: "WUX_REAL_REPLY" });
     } finally {
       if (created) await killTmux(name);
       process.env.XDG_STATE_HOME = old;

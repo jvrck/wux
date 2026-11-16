@@ -205,6 +205,13 @@ Hook and sentinel signals are accepted only for the current turn after the lates
 wait. For `claude` and `codex`, a quiet pane is not completion evidence: without
 a current-turn hook or sentinel, they resolve only as `timeout` or `unknown`.
 
+Codex completion is additionally fail-closed and turn-scoped: only an exact
+`agent-turn-complete` payload whose final `input-messages` entry matches the
+latest trimmed `send` is accepted. Other Codex notifications, including
+auxiliary title events, remain recorded as `backend-signal` observations with
+their payload type and bounded provenance (identifiers, input count, and input
+digest), but cannot settle `wait` or `result` or create a completion sentinel.
+
 Grok 1.0.62 has no wux-managed per-run hook. For Grok the honest ladder is
 **explicit hook > sentinel > timeout/unknown**: pane quietness never becomes
 `done` or `completedVia: "quiescence"`. A composed external hook must call

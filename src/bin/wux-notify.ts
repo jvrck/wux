@@ -2,7 +2,7 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { appendBackendSignal, type BackendSignal } from "../runtime/events";
+import { appendBackendSignal, inputMessageDigest, readCurrentTurnInput, type BackendSignal } from "../runtime/events";
 import { loadRun } from "../runtime/runs";
 import { runDir } from "../runtime/state";
 
@@ -44,8 +44,9 @@ export async function runNotifyCli(args: string[], options: NotifyCliOptions = {
     if (meta?.backend === "grok" && !parsedArgs.explicitSignal) {
       throw new Error("grok notifications require an explicit signal");
     }
+    const provenance = payloadProvenance(payload);
     await appendBackendSignal(runName, {
-      signal: parsedArgs.signal ?? signalFromPayload(payload) ?? "turn-complete",
+      signal: await resolveSignal(runName, meta?.backend, parsedArgs, payload, provenance),
       turnId: firstStringField(payload, ["turnId", "turn_id", "turn-id"]),
       lastAssistantMessage: firstStringField(payload, [
         "lastAssistantMessage",
@@ -55,6 +56,7 @@ export async function runNotifyCli(args: string[], options: NotifyCliOptions = {
         "last_agent_message",
         "last-agent-message",
       ]),
+      ...provenance,
     });
     return 0;
   } catch (error) {
@@ -64,11 +66,11 @@ export async function runNotifyCli(args: string[], options: NotifyCliOptions = {
   }
 }
 
-function parseNotifyArgs(args: string[]): { signal?: BackendSignal; payload?: unknown; explicitSignal?: boolean; error?: boolean } {
+function parseNotifyArgs(args: string[]): { signal?: BackendSignal; legacySignal?: BackendSignal; payload?: unknown; explicitSignal?: boolean; error?: boolean } {
   const first = args[0];
   // Keep the pre-Grok contract: a bare helper invocation means completion,
   // regardless of any hook payload supplied on stdin.
-  if (first === undefined) return { signal: "turn-complete", explicitSignal: false };
+  if (first === undefined) return { legacySignal: "turn-complete", explicitSignal: false };
   const signal = normalizeSignal(first);
   if (signal) return { signal, explicitSignal: true };
   const payload = parsePayload(first);
@@ -103,6 +105,48 @@ function stringField(payload: unknown, field: string): string | undefined {
   if (payload === null || typeof payload !== "object") return undefined;
   const value = (payload as Record<string, unknown>)[field];
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+interface PayloadProvenance {
+  payloadType?: string;
+  threadId?: string;
+  client?: string;
+  inputMessagesCount?: number;
+  inputMessageDigest?: string;
+}
+
+function payloadProvenance(payload: unknown): PayloadProvenance {
+  if (payload === null || typeof payload !== "object") return {};
+  const record = payload as Record<string, unknown>;
+  const inputMessages = record["input-messages"];
+  const strings = Array.isArray(inputMessages) && inputMessages.every((message): message is string => typeof message === "string") ? inputMessages : undefined;
+  return {
+    ...(typeof record.type === "string" ? { payloadType: record.type } : {}),
+    ...(typeof record["thread-id"] === "string" ? { threadId: record["thread-id"] } : {}),
+    ...(typeof record.client === "string" ? { client: record.client } : {}),
+    ...(Array.isArray(inputMessages) ? { inputMessagesCount: inputMessages.length } : {}),
+    ...(strings !== undefined && strings.length > 0 ? { inputMessageDigest: inputMessageDigest(strings.at(-1)!) } : {}),
+  };
+}
+
+async function resolveSignal(
+  runName: string,
+  backend: string | undefined,
+  args: ReturnType<typeof parseNotifyArgs>,
+  payload: unknown,
+  provenance: PayloadProvenance,
+): Promise<BackendSignal | undefined> {
+  if (backend !== "codex") {
+    // Preserve legacy payload mapping for other backends. Codex is the one
+    // managed hook with a reliable turn discriminator, so it alone fails closed.
+    return args.signal ?? args.legacySignal ?? signalFromPayload(payload) ?? "turn-complete";
+  }
+  if (args.explicitSignal) {
+    return args.signal === "awaiting-approval" ? args.signal : undefined;
+  }
+  if (provenance.payloadType !== "agent-turn-complete" || provenance.inputMessageDigest === undefined) return undefined;
+  const current = await readCurrentTurnInput(runName);
+  return current.inputMessageDigest === provenance.inputMessageDigest && !current.ambiguousDuplicate ? "turn-complete" : undefined;
 }
 
 function signalFromPayload(payload: unknown): BackendSignal | undefined {

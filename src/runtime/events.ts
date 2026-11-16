@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runDir } from "./state";
@@ -21,22 +22,49 @@ export type BackendSignal = "turn-complete" | "awaiting-approval";
 
 export interface BackendSignalEvent extends RunEvent {
   type: "backend-signal";
-  signal: BackendSignal;
+  signal?: BackendSignal;
   at: string;
   turnId?: string;
   lastAssistantMessage?: string;
+  payloadType?: string;
+  threadId?: string;
+  client?: string;
+  inputMessagesCount?: number;
+  inputMessageDigest?: string;
 }
 
 export interface BackendSignalInput {
-  signal: BackendSignal;
+  signal?: BackendSignal;
   at?: string;
   turnId?: string;
   lastAssistantMessage?: string;
+  payloadType?: string;
+  threadId?: string;
+  client?: string;
+  inputMessagesCount?: number;
+  inputMessageDigest?: string;
 }
 
 export interface BackendSignalObservation {
   signal?: BackendSignalEvent;
   lastTurnInputAt: string | null;
+  lastTurnInputDigest?: string;
+}
+
+export interface CurrentTurnInput {
+  inputMessageDigest?: string;
+  ambiguousDuplicate?: boolean;
+}
+
+// Codex records its final input message with leading and trailing whitespace
+// removed. Keep only a digest in run events so hook correlation does not retain
+// the operator's prompt.
+export function normalizeCodexInput(text: string): string {
+  return text.trim();
+}
+
+export function inputMessageDigest(message: string): string {
+  return createHash("sha256").update(normalizeCodexInput(message)).digest("hex");
 }
 
 // Persisted record of a `wait` settle so the read-only `result` snapshot can
@@ -110,20 +138,28 @@ export async function appendBackendSignal(runName: string, input: BackendSignalI
     at,
     ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
     ...(input.lastAssistantMessage !== undefined ? { lastAssistantMessage: input.lastAssistantMessage } : {}),
+    ...(input.payloadType !== undefined ? { payloadType: input.payloadType } : {}),
+    ...(input.threadId !== undefined ? { threadId: input.threadId } : {}),
+    ...(input.client !== undefined ? { client: input.client } : {}),
+    ...(input.inputMessagesCount !== undefined ? { inputMessagesCount: input.inputMessagesCount } : {}),
+    ...(input.inputMessageDigest !== undefined ? { inputMessageDigest: input.inputMessageDigest } : {}),
   };
   await appendEvent(runName, event);
 
   const dir = runDir(runName);
   await mkdir(dir, { recursive: true });
-  const state = {
-    lastSignal: input.signal,
-    at,
-    ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
-  };
-  await writeFile(join(dir, "state.json"), `${JSON.stringify(state, null, 2)}
+  if (input.signal !== undefined) {
+    const state = {
+      lastSignal: input.signal,
+      at,
+      ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
+      ...(input.inputMessageDigest !== undefined ? { inputMessageDigest: input.inputMessageDigest } : {}),
+    };
+    await writeFile(join(dir, "state.json"), `${JSON.stringify(state, null, 2)}
 `, "utf8");
+  }
   if (input.signal === "turn-complete") {
-    await writeFile(join(dir, "turn-complete"), `${input.signal} ${at}
+    await writeFile(join(dir, "turn-complete"), `${input.signal} ${at}${input.inputMessageDigest === undefined ? "" : ` ${input.inputMessageDigest}`}
 `, "utf8");
   }
   return event;
@@ -142,24 +178,42 @@ export async function readBackendSignalObservation(runName: string): Promise<Bac
   const events = await readEvents(runName);
   let lastTurnInputIndex = -1;
   let lastTurnInputAt: string | null = null;
+  let lastTurnInputDigest: string | undefined;
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
     if (!TURN_INPUT_TYPES.has(event.type)) continue;
     lastTurnInputIndex = index;
     lastTurnInputAt = typeof event.at === "string" ? event.at : null;
+    lastTurnInputDigest = typeof event.inputMessageDigest === "string" ? event.inputMessageDigest : undefined;
     break;
   }
 
   for (let index = events.length - 1; index > lastTurnInputIndex; index -= 1) {
     const event = events[index];
-    if (isBackendSignalEvent(event)) return { signal: event, lastTurnInputAt };
+    if (isBackendSignalEvent(event)) return { signal: event, lastTurnInputAt, ...(lastTurnInputDigest !== undefined ? { lastTurnInputDigest } : {}) };
   }
 
   const stateSignal = await readBackendSignalState(runName);
   if (stateSignal && signalIsAfterLastTurnInput(stateSignal, lastTurnInputAt)) {
-    return { signal: stateSignal, lastTurnInputAt };
+    return { signal: stateSignal, lastTurnInputAt, ...(lastTurnInputDigest !== undefined ? { lastTurnInputDigest } : {}) };
   }
-  return { lastTurnInputAt };
+  return { lastTurnInputAt, ...(lastTurnInputDigest !== undefined ? { lastTurnInputDigest } : {}) };
+}
+
+// Codex can send the same prompt more than once. A matching completion is only
+// attributable to the latest send when no earlier identical send remains
+// unanswered; an accepted completion resets that ambiguity boundary.
+export async function readCurrentTurnInput(runName: string): Promise<CurrentTurnInput> {
+  const events = await readEvents(runName);
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.type !== "send" || typeof event.inputMessageDigest !== "string") continue;
+    return {
+      inputMessageDigest: event.inputMessageDigest,
+      ...(hasAmbiguousDuplicate(events, index, event.inputMessageDigest) ? { ambiguousDuplicate: true } : {}),
+    };
+  }
+  return {};
 }
 
 export async function appendWaitSettled(runName: string, input: WaitSettledInput): Promise<WaitSettledEvent> {
@@ -219,6 +273,7 @@ async function readBackendSignalState(runName: string): Promise<BackendSignalEve
         signal: parsed.lastSignal,
         at: parsed.at,
         ...(typeof parsed.turnId === "string" ? { turnId: parsed.turnId } : {}),
+        ...(typeof parsed.inputMessageDigest === "string" ? { inputMessageDigest: parsed.inputMessageDigest } : {}),
       };
     }
   } catch {
@@ -233,6 +288,15 @@ function isBackendSignalEvent(event: RunEvent): event is BackendSignalEvent {
     (event.signal === "turn-complete" || event.signal === "awaiting-approval") &&
     typeof event.at === "string"
   );
+}
+
+function hasAmbiguousDuplicate(events: RunEvent[], currentIndex: number, digest: string): boolean {
+  for (let index = currentIndex - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (isBackendSignalEvent(event)) return false;
+    if (event.type === "send" && event.inputMessageDigest === digest) return true;
+  }
+  return false;
 }
 
 function signalIsAfterLastTurnInput(signal: BackendSignalEvent, lastTurnInputAt: string | null): boolean {
