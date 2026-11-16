@@ -187,15 +187,15 @@ describe("mcp tools — by stamping (unit, real run)", () => {
         let input = await lastInput(name);
         expect(input.lastInputBy).toBe("mcp:probe-x");
 
-        await interruptCommand({ name, forceOwner: false, actor: "mcp:probe-y" });
-        input = await lastInput(name);
-        expect(input.lastInputBy).toBe("mcp:probe-y");
-
         // No actor -> default owner "user@host" (not an mcp: id).
         await sendCommand({ name, text: "echo b", forceOwner: false });
         input = await lastInput(name);
         expect(input.lastInputBy).not.toBeNull();
         expect((input.lastInputBy as string).startsWith("mcp:")).toBe(false);
+
+        await interruptCommand({ name, forceOwner: false, actor: "mcp:probe-y" });
+        input = await lastInput(name);
+        expect(input.lastInputBy).toBe("mcp:probe-y");
 
         await stopCommand(name, true, "mcp:probe-z");
         input = await lastInput(name);
