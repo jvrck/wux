@@ -140,6 +140,11 @@ a pane that stays genuinely busy returns an honest non-`submitted` verdict rathe
 than a silent strand; gate completion on `wait` plus ground truth, never on the
 `send` verdict.
 
+For interactive Claude runs, `run` makes one startup observation of about half a
+second. If the session exits in that window, it fails with
+`exited-during-startup` and a sanitized pane tail; an exit later is not classified
+as a startup exit. `claude --print` and `claude -p` bypass this observation.
+
 `shell` keeps the unconditional fast path, and any other/unknown backend falls back
 to the legacy blind type+Enter. Set **`WUX_SEND_READINESS=0`** to revert every
 backend to that legacy behaviour (the kill-switch; mirrors `WUX_FORCE_LOCAL` as a

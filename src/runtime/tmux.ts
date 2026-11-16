@@ -137,6 +137,18 @@ export async function hasSession(session: string, connection: TmuxConnection = a
   return (await probeSession(session, connection)).state === "live";
 }
 
+// A retained dead pane keeps its session visible to `has-session`. Read tmux's
+// recorded status only when it positively marks the pane dead; ordinary output
+// is never evidence that a backend exited.
+export async function paneDeadStatus(session: string, connection: TmuxConnection = ambientTmuxConnection()): Promise<string | undefined> {
+  const result = await runTmux(connection, ["display-message", "-p", "-t", exactPaneTarget(session), "-F", "#{pane_dead}:#{pane_dead_status}"]);
+  if (result.code !== 0) return undefined;
+  const [dead, ...statusParts] = result.stdout.trim().split(":");
+  if (dead !== "1") return undefined;
+  const status = statusParts.join(":").trim();
+  return status.length > 0 ? status : "unknown";
+}
+
 export function unavailableTmuxMessage(connection: TmuxConnection, detail?: string): string {
   const target = connection.socketPath !== undefined ? ` at ${connection.socketPath}` : "";
   const suffix = detail && detail.length > 0 ? `: ${detail}` : "";
@@ -227,6 +239,7 @@ export async function createSession(options: {
   cwd: string;
   command: string[];
   logPath: string;
+  startupGatePath?: string;
   env?: NodeJS.ProcessEnv;
   connection?: TmuxConnection;
   // Backward-compatible test injection; production callers pass `connection`.
@@ -279,6 +292,16 @@ export async function createSession(options: {
         throw new WuxError(`failed to elevate tmux history-limit: ${elevate.stderr || elevate.stdout}`.trim());
       }
       try {
+        const launchCommand = options.startupGatePath
+          ? [
+              "/bin/sh",
+              "-c",
+              'attempt=0; while [ ! -e "$1" ]; do attempt=$((attempt + 1)); if [ "$attempt" -ge 500 ]; then : > "$1.timed-out"; echo "wux: startup gate timed out waiting for readiness file" >&2; exit 75; fi; sleep 0.01 2>/dev/null || { attempt=$((attempt + 99)); sleep 1; }; done; shift; exec "$@"',
+              "wux-startup",
+              options.startupGatePath,
+              ...options.command,
+            ]
+          : options.command;
         const result = await runTmux(connection, [
           "-f",
           conf,
@@ -288,7 +311,7 @@ export async function createSession(options: {
           options.session,
           "-c",
           options.cwd,
-          ...options.command,
+          ...launchCommand,
         ]);
         sessionCreated = result.code === 0;
         return result;
@@ -316,6 +339,9 @@ export async function createSession(options: {
     // Pin the generous scrollback at session scope (outlives the global restore,
     // visible to show-options, and inherited by later panes/windows).
     await setSessionOption(options.session, "history-limit", WUX_HISTORY_LIMIT, connection);
+    if (options.startupGatePath) {
+      await setSessionOption(options.session, "remain-on-exit", "on", connection);
+    }
     // Mouse is contentious (it changes native click-drag selection), so it is
     // strictly opt-in and applied only at session scope — never globally and
     // never to the operator's ~/.tmux.conf.
@@ -341,6 +367,10 @@ export async function createSession(options: {
     }
     throw error;
   }
+}
+
+export async function setRemainOnExit(session: string, enabled: boolean, connection: TmuxConnection = ambientTmuxConnection()): Promise<void> {
+  await setSessionOption(session, "remain-on-exit", enabled ? "on" : "off", connection);
 }
 
 function errorText(error: unknown): string {

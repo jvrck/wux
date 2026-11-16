@@ -1,4 +1,4 @@
-import { mkdir, open, rm } from "node:fs/promises";
+import { mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { backendCommand } from "../backends";
@@ -6,7 +6,17 @@ import { appendEvent } from "../runtime/events";
 import { WuxError } from "../runtime/errors";
 import { createRunMeta, saveRun, type RunBackend } from "../runtime/runs";
 import { runDir, runsRoot } from "../runtime/state";
-import { ambientTmuxConnection, createSession, discoverSocketPath, hasSession, killSession } from "../runtime/tmux";
+import {
+  ambientTmuxConnection,
+  createSession,
+  discoverSocketPath,
+  hasSession,
+  killSession,
+  paneDeadStatus,
+  probeSession,
+  setRemainOnExit,
+  unavailableTmuxMessage,
+} from "../runtime/tmux";
 
 export type { RunBackend } from "../runtime/runs";
 
@@ -27,6 +37,14 @@ export interface RunResult {
   cwd: string;
   runDir: string;
 }
+
+// A one-shot observation, not a watcher: it catches the trust-dialog exit
+// immediately after the backend starts without changing later run lifecycle.
+const CLAUDE_STARTUP_CHECK_MS = 500;
+const STARTUP_PANE_TAIL_LINES = 20;
+const STARTUP_GATE_TIMEOUT = "wux: startup gate timed out waiting for readiness file";
+const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
+const CONTROL_EXCEPT_NEWLINE_RE = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g;
 
 export async function runCommand(options: RunOptions): Promise<RunResult> {
   const cwd = resolve(options.cwd);
@@ -54,16 +72,68 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
   }
 
   let sessionCreated = false;
+  let startupExitReported = false;
   try {
     const paneLog = join(dir, "pane.log");
+    const startupGatePath = join(dir, "startup-ready");
+    const observeClaudeStartup = meta.backend === "claude" && !isClaudePrintMode(backendArgs);
     await touch(paneLog);
     await touch(join(dir, "events.jsonl"));
-    await createSession({ session: meta.tmuxSession, cwd: meta.cwd, command, logPath: paneLog, env: tmuxEnv, connection });
+    await createSession({
+      session: meta.tmuxSession,
+      cwd: meta.cwd,
+      command,
+      logPath: paneLog,
+      ...(observeClaudeStartup ? { startupGatePath } : {}),
+      env: tmuxEnv,
+      connection,
+    });
     sessionCreated = true;
     const tmuxSocketPath = await discoverSocketPath(meta.tmuxSession, connection);
     await saveRun({ ...meta, tmuxSocketPath });
+    if (observeClaudeStartup) {
+      await writeFile(startupGatePath, "ready\n", "utf8");
+      await delay(CLAUDE_STARTUP_CHECK_MS);
+
+      const startupState = async (): Promise<string | undefined> => {
+        const probe = await probeSession(meta.tmuxSession, connection);
+        if (probe.state === "unavailable") throw new WuxError(unavailableTmuxMessage(connection, probe.detail));
+        if (probe.state === "absent") return "unknown";
+        return paneDeadStatus(meta.tmuxSession, connection);
+      };
+      const reportStartupExit = async (exitStatus: string): Promise<never> => {
+        const paneTail = await paneLogTail(paneLog, STARTUP_PANE_TAIL_LINES);
+        if ((await exists(`${startupGatePath}.timed-out`)) || paneTail.includes(STARTUP_GATE_TIMEOUT)) {
+          throw new WuxError("startup gate timed out before claude launch; retry the run");
+        }
+        const probe = await probeSession(meta.tmuxSession, connection);
+        if (probe.state === "unavailable") throw new WuxError(unavailableTmuxMessage(connection, probe.detail));
+        if (probe.state === "live") await killSession(meta.tmuxSession, connection);
+        const stoppedAt = new Date().toISOString();
+        await saveRun({ ...meta, tmuxSocketPath, status: "stopped", stoppedAt, updatedAt: stoppedAt });
+        await appendEvent(meta.name, {
+          type: "create",
+          backend: meta.backend,
+          owner: meta.owner,
+          result: "exited-during-startup",
+          exitStatus,
+          paneTail,
+        });
+        startupExitReported = true;
+        throw new WuxError(`exited-during-startup: ${meta.name}; pane tail:\n${paneTail || "(no pane output captured)"}`);
+      };
+
+      const exitStatus = await startupState();
+      if (exitStatus !== undefined) await reportStartupExit(exitStatus);
+      await setRemainOnExit(meta.tmuxSession, false, connection);
+      // A process can exit while remain-on-exit is being toggled. Check once more
+      // so an inert retained pane cannot be returned as a live worker.
+      const exitAfterToggle = await startupState();
+      if (exitAfterToggle !== undefined) await reportStartupExit(exitAfterToggle);
+    }
     await appendEvent(meta.name, { type: "create", backend: meta.backend, owner: meta.owner });
   } catch (error) {
+    if (startupExitReported) throw error;
     const rollbackErrors: unknown[] = [];
     if (sessionCreated) {
       try {
@@ -84,6 +154,45 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
   }
 
   return { name: meta.name, backend: meta.backend, tmuxSession: meta.tmuxSession, cwd: meta.cwd, runDir: dir };
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await readFile(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function isClaudePrintMode(backendArgs: string[]): boolean {
+  for (const arg of backendArgs) {
+    if (arg === "--") return false;
+    if (arg === "--print" || arg === "-p") return true;
+  }
+  return false;
+}
+
+async function paneLogTail(path: string, lines: number): Promise<string> {
+  try {
+    const raw = await readFile(path, "utf8");
+    return raw
+      .replace(ANSI_RE, "")
+      .replace(/\x1b/g, "")
+      .replace(CONTROL_EXCEPT_NEWLINE_RE, "")
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .slice(-lines)
+      .join("\n");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+    throw error;
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function errorMessage(error: unknown): string {
