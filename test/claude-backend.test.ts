@@ -62,6 +62,65 @@ describe("claude backend", () => {
     }
   });
 
+  test("fails loudly when an interactive claude exits during startup", async () => {
+    if (!(await hasTmux())) return;
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const bin = join(temp.root, "bin");
+    const fakeClaude = join(bin, "claude");
+    const name = uniqueRunName("claude-startup-exit");
+
+    try {
+      await mkdir(bin);
+      await writeFile(fakeClaude, "#!/bin/sh\nprintf 'startup dialog evidence\\n'\nexit 7\n", "utf8");
+      await chmod(fakeClaude, 0o755);
+
+      await expect(
+        runCommand({
+          backend: "claude",
+          name,
+          cwd: temp.root,
+          env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, WUX_NOTIFY_PATH: "/tmp/wux-notify" },
+        }),
+      ).rejects.toThrow(/exited-during-startup.*startup dialog evidence/s);
+    } finally {
+      await killTmux(name);
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("leaves claude --print unchanged when it exits during startup", async () => {
+    if (!(await hasTmux())) return;
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const bin = join(temp.root, "bin");
+    const fakeClaude = join(bin, "claude");
+    const name = uniqueRunName("claude-print");
+
+    try {
+      await mkdir(bin);
+      await writeFile(fakeClaude, "#!/bin/sh\nprintf 'print completed\\n'\nexit 0\n", "utf8");
+      await chmod(fakeClaude, 0o755);
+
+      await expect(
+        runCommand({
+          backend: "claude",
+          name,
+          cwd: temp.root,
+          backendArgs: ["--print"],
+          env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, WUX_NOTIFY_PATH: "/tmp/wux-notify" },
+        }),
+      ).resolves.toMatchObject({ name, backend: "claude" });
+    } finally {
+      await killTmux(name);
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
   test("appends backendArgs after wux-managed args and preserves the notify hook", async () => {
     const temp = await tempState();
     const bin = join(temp.root, "bin");
