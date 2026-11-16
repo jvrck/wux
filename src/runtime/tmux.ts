@@ -612,14 +612,20 @@ export function classifySubmission(before: string, after: string, text: string, 
   if (anchor.presence === "held") return "not-submitted";
   if (anchor.presence === "partial") return "uncertain";
 
+  const beforeClean = stripAnsi(before);
+  if (beforeClean.trim().length === 0 || beforeClean === afterClean) return "uncertain";
+
   const transcriptVerdict = classifyTranscriptEvidence(afterClean, needles);
   if (transcriptVerdict !== undefined) return transcriptVerdict;
+
+  // Claude/Codex no longer promote a merely changed frame to `submitted`.
+  // A collapsed paste can hide every literal line, so no whole-text evidence is
+  // an honest `uncertain` verdict whether or not a composer marker survived.
+  if (isGatedBackend(backend)) return "uncertain";
 
   // Text lingers in the frame but not on a composer line. Without a usable
   // baseline (before-capture failed/empty) we cannot honestly say the frame
   // advanced, so stay uncertain rather than risk a false success.
-  const beforeClean = stripAnsi(before);
-  if (beforeClean.trim().length === 0) return "uncertain";
   return beforeClean !== afterClean ? "submitted" : "uncertain";
 }
 
@@ -635,7 +641,9 @@ function classifyTranscriptEvidence(afterClean: string, needles: string[]): Subm
       break;
     }
   }
-  if (composerIndex === lines.length) return undefined;
+  // When the TUI redraw omits its composer marker entirely, the whole captured
+  // frame is the only available transcript evidence. Do not let that omission
+  // revive the old changed-frame success path.
   const transcript = lines.slice(0, composerIndex);
   const contains = (needle: string): boolean => transcript.some((line) => line.includes(needle));
   let nextLine = 0;

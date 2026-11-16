@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { delimiter, join } from "node:path";
 import { runCli } from "../src/cli";
 import { runCommand } from "../src/commands/run";
 import { sendCommand } from "../src/commands/send";
@@ -23,6 +23,19 @@ function memoryIO() {
     },
     output: () => ({ stdout, stderr }),
   };
+}
+
+async function waitForPath(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      await stat(path);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for ${path}`);
 }
 
 describe("send", () => {
@@ -153,6 +166,41 @@ describe("send", () => {
       await temp.cleanup();
     }
   });
+
+  test("a real collapsed Codex paste stays uncertain", async () => {
+    if (!(await hasTmux())) return;
+    const temp = await tempState();
+    const oldStateHome = process.env.XDG_STATE_HOME;
+    const oldReadiness = process.env.WUX_SEND_READINESS;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const bin = join(temp.root, "bin");
+    const fakeCodex = join(bin, "codex");
+    const ready = join(temp.root, "fake-ready");
+    const name = uniqueRunName("send-collapsed-codex");
+    let created = false;
+
+    try {
+      await mkdir(bin);
+      await writeFile(
+        fakeCodex,
+        `#!/bin/sh\nprintf 'Codex ready\\n'\n: > ${JSON.stringify(ready)}\nstty raw -echo\ndd bs=1 count=1 of=/dev/null 2>/dev/null\nprintf '› [Pasted text #1 +2 lines]\\n'\nsleep 30\n`,
+        "utf8",
+      );
+      await chmod(fakeCodex, 0o755);
+      await runCommand({ backend: "codex", name, cwd: temp.root, env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` } });
+      created = true;
+      await waitForPath(ready);
+      process.env.WUX_SEND_READINESS = "0";
+
+      expect(await sendCommand({ name, text: "first sent line\nsecond sent line\nthird sent line", forceOwner: false })).toMatchObject({ submission: "uncertain", retried: false });
+    } finally {
+      if (created) await killTmux(name);
+      if (oldReadiness === undefined) delete process.env.WUX_SEND_READINESS;
+      else process.env.WUX_SEND_READINESS = oldReadiness;
+      process.env.XDG_STATE_HOME = oldStateHome;
+      await temp.cleanup();
+    }
+  });
 });
 
 describe("classifySubmission", () => {
@@ -180,8 +228,8 @@ describe("classifySubmission", () => {
     expect(classifySubmission("> ", after, "printf 'hi'", "claude")).toBe("not-submitted");
   });
 
-  test("a cleared composer with the text gone is submitted", () => {
-    expect(classifySubmission("> printf 'hi'", "working…\n> ", "printf 'hi'", "claude")).toBe("submitted");
+  test("a cleared composer without transcript evidence is uncertain", () => {
+    expect(classifySubmission("> printf 'hi'", "working…\n> ", "printf 'hi'", "claude")).toBe("uncertain");
   });
 
   test("classifies ordered whole-text transcript evidence without accepting a truncated paste", async () => {
@@ -195,6 +243,21 @@ describe("classifySubmission", () => {
     expect(classifySubmission(before, ["first sent line", "second sent line", "third sent line", "❯ ", "────"].join("\n"), text, "claude")).toBe("submitted");
     expect(classifySubmission(before, ["second sent line", "unrelated output", "second sent line", "❯ ", "────"].join("\n"), text, "claude")).toBe("uncertain");
     expect(classifySubmission(before, ["❯ first sent line", "second sent line", "third sent line"].join("\n"), text, "claude")).toBe("not-submitted");
+  });
+
+  test("fails closed when a gated backend lacks whole-text evidence", async () => {
+    const text = "first sent line\nsecond sent line\nthird sent line";
+    const fixture = async (name: string) => readFile(join(import.meta.dir, "fixtures", "composer", name), "utf8");
+    const [tailWithoutComposer, collapsedComposer, collapsedTranscript] = await Promise.all([
+      fixture("claude-head-truncated-no-composer.txt"),
+      fixture("claude-collapsed-on-composer.txt"),
+      fixture("claude-collapsed-transcript.txt"),
+    ]);
+    const before = "● Earlier assistant output\n❯ ";
+
+    expect(classifySubmission(before, tailWithoutComposer, text, "claude")).toBe("truncated");
+    expect(classifySubmission(before, collapsedComposer, text, "claude")).toBe("uncertain");
+    expect(classifySubmission(before, collapsedTranscript, text, "claude")).toBe("uncertain");
   });
 
   test("an unchanged frame with the text off the composer is uncertain", () => {
@@ -240,9 +303,9 @@ describe("classifySubmission", () => {
     expect(classifySubmission("> ", "> hi", "hi", "claude")).toBe("not-submitted");
   });
 
-  test("a short word matching placeholder chrome but gone from the composer is submitted", () => {
-    // Sent "this" submitted; the composer now shows a placeholder example, not our text.
-    expect(classifySubmission("> ", "> Explain this codebase", "this", "claude")).toBe("submitted");
+  test("a short word matching placeholder chrome without transcript evidence is uncertain", () => {
+    // The composer now shows a placeholder example, not proof our text submitted.
+    expect(classifySubmission("> ", "> Explain this codebase", "this", "claude")).toBe("uncertain");
   });
 
   test("multi-line prompt with a blockquote continuation line is not-submitted", () => {
@@ -271,9 +334,9 @@ describe("classifySubmission", () => {
     expect(classifySubmission("> draft ", "> draft hi", "hi", "claude")).toBe("not-submitted");
   });
 
-  test("a short prompt that is only the tail of an unrelated composer word is submitted", () => {
-    // "hi" is the tail of "graphi" but not a word-boundary suffix, so it is not lingering.
-    expect(classifySubmission("> ", "> graphi", "hi", "claude")).toBe("submitted");
+  test("a short prompt that is only the tail of an unrelated composer word is uncertain", () => {
+    // "hi" is the tail of "graphi" but not a word-boundary suffix, and no transcript proves submission.
+    expect(classifySubmission("> ", "> graphi", "hi", "claude")).toBe("uncertain");
   });
 
   test("a submitted turn echoed in the transcript above an empty live composer is submitted", () => {
@@ -344,8 +407,8 @@ const enterCount = (sent: string[][]): number => sent.filter((args) => args[args
 describe("sendLiteral readiness-gated path", () => {
   test("submits once after the typed text renders at-rest (claude)", async () => {
     const sent: string[][] = [];
-    // before, 3 ready frames (text rendered, static, not busy) for the gate, then a cleared frame.
-    const frames = ["❯ ", "❯ hello there", "❯ hello there", "❯ hello there", "✻ Working…\n❯ "];
+    // before, 3 ready frames (text rendered, static, not busy) for the gate, then an echoed submitted turn.
+    const frames = ["❯ ", "❯ hello there", "❯ hello there", "❯ hello there", "❯ hello there\n✻ Working…\n❯ "];
     const result = await sendLiteral("wux_x", "hello there", {
       backend: "claude",
       runner: recordingRunner(sent),
@@ -366,7 +429,7 @@ describe("sendLiteral readiness-gated path", () => {
       strand, strand, strand, // pre-submit gate: ready (text present, idle, static)
       strand, // re-observe after first Enter: text still on composer → not-submitted
       strand, strand, strand, // re-gate before resend: ready again (Enter was dropped, pane idle)
-      "• Working (1s • esc to interrupt)\n› ", // re-observe after resend: submitted (text gone)
+      "› queued instruction\n• Working (1s • esc to interrupt)\n› ", // re-observe after resend: echoed submitted turn
     ];
     const result = await sendLiteral("wux_x", "queued instruction", {
       backend: "codex",
@@ -418,7 +481,7 @@ describe("sendLiteral readiness-gated path", () => {
   test("multi-line literal is typed in ONE -l and submitted with ONE Enter", async () => {
     const sent: string[][] = [];
     const rendered = "❯ line one\n  line two";
-    const frames = ["❯ ", rendered, rendered, rendered, "✻ Working…\n❯ "];
+    const frames = ["❯ ", rendered, rendered, rendered, "❯ line one\nline two\n✻ Working…\n❯ "];
     const result = await sendLiteral("wux_x", "line one\nline two", {
       backend: "claude",
       runner: recordingRunner(sent),
@@ -475,7 +538,7 @@ describe("sendLiteral legacy/degrade paths", () => {
   test("kill-switch (readiness:false) reverts to the legacy blind type+Enter+classify", async () => {
     const sent: string[][] = [];
     let captures = 0;
-    const frames = ["baseline", "thinking…"]; // before, after (submitted) — no gate captures
+    const frames = ["baseline", "❯ do the thing\nthinking…\n❯ "]; // before, after (echoed submitted) — no gate captures
     const next = frameCapture(frames);
     const result = await sendLiteral("wux_x", "do the thing", {
       backend: "claude",
@@ -495,7 +558,7 @@ describe("sendLiteral legacy/degrade paths", () => {
 
   test("legacy path still does the single blind retry on not-submitted", async () => {
     const sent: string[][] = [];
-    const frames = ["baseline", "> printf 'hi'", "working…"]; // before, after-1 (strand), after-retry (submitted)
+    const frames = ["baseline", "> printf 'hi'", "> printf 'hi'\nworking…\n> "]; // before, after-1 (strand), after-retry (echoed submitted)
     const result = await sendLiteral("wux_x", "printf 'hi'", {
       backend: "claude",
       readiness: false,
