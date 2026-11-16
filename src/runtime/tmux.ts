@@ -440,8 +440,8 @@ const CONTROL_EXCEPT_NEWLINE_RE = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g;
 const MIN_COMPOSER_SIGNATURE = 4;
 // Marker prefix (+ optional trailing space) stripped to read the composer head.
 const COMPOSER_MARKER_RE = new RegExp(`${COMPOSER_LINE_RE.source}\\s?`);
-// Pinned by codex-trust-dialog.txt: a bottom-most highlighted menu choice is
-// not an input composer, even though Codex uses the same marker glyph for both.
+// Pinned by codex-trust-dialog.txt: choice text is only dialog evidence when it
+// forms a complete choice menu, never when it is ordinary text in a composer.
 const DIALOG_CHOICE_RE = /^(?:\d+[.)]\s+|yes\b|no\b)/i;
 
 // Cross-backend "turn in flight" signal. Both Claude and Codex print "esc to
@@ -475,17 +475,34 @@ export function stripAnsi(value: string): string {
   return value.replace(ANSI_RE, "").replace(STRAY_ESC_RE, "").replace(CONTROL_EXCEPT_NEWLINE_RE, "");
 }
 
-function hasRecognizedComposer(frame: string): boolean {
-  const lines = stripAnsi(frame).split("\n");
-  // Match composerTextAnchor's bottom-up structure: transcript turns can share
-  // the marker glyph, but the final marker is the live composer region.
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const line = lines[index];
-    if (!COMPOSER_LINE_RE.test(line)) continue;
-    const head = line.replace(COMPOSER_MARKER_RE, "").trim();
-    return !DIALOG_CHOICE_RE.test(head);
+function isDialogChoiceLine(line: string): boolean {
+  return DIALOG_CHOICE_RE.test(line.replace(COMPOSER_MARKER_RE, "").trim());
+}
+
+function hasDialogChoiceMenu(lines: string[]): boolean {
+  for (let start = 0; start < lines.length; start += 1) {
+    if (!isDialogChoiceLine(lines[start])) continue;
+    let end = start + 1;
+    while (end < lines.length && isDialogChoiceLine(lines[end])) end += 1;
+    if (end - start < 2) continue;
+
+    // A real live composer or placeholder below the choice menu makes the menu
+    // transcript, not a dialog. Codex can render its old trust prompt above the
+    // active composer, so only a bottom menu without a later composer is unsafe.
+    if (!lines.slice(end).some((line) => COMPOSER_LINE_RE.test(line))) return true;
+    start = end - 1;
   }
   return false;
+}
+
+function hasRecognizedComposer(frame: string): boolean {
+  const lines = stripAnsi(frame).split("\n");
+  if (hasDialogChoiceMenu(lines)) return false;
+
+  // Match composerTextAnchor's bottom-up structure: transcript turns can share
+  // the marker glyph, but the final marker is the live composer region. A draft
+  // beginning with a number, "yes", or "no" is still text in that composer.
+  return lines.some((line) => COMPOSER_LINE_RE.test(line));
 }
 
 // Whether the pre-submit readiness gate is active. Default-ON; the kill-switch

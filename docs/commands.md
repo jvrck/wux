@@ -143,9 +143,9 @@ than a silent strand; gate completion on `wait` plus ground truth, never on the
 If Claude starts in an untrusted working directory, its trust dialog has no ready
 composer. `wux run claude` fails with `exited-during-startup` and a pane tail if
 the session exits in its short startup check; use a trusted `--cwd` or `--print`.
-If the dialog remains open, `wux send` withholds Enter and returns
-`not-submitted` with `reason: "no-composer"`; wux never accepts or dismisses the
-dialog.
+If a non-composer screen remains open, `wux send` withholds the typed text and
+Enter and returns `not-submitted` with `reason: "no-composer"`; wux never
+accepts or dismisses the dialog.
 
 The startup check is a fixed, one-shot observation (about half a second) inside
 `run`, not a watcher. An exit after that observation is not classified as a
