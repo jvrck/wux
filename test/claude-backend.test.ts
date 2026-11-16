@@ -69,34 +69,86 @@ describe("claude backend", () => {
     process.env.XDG_STATE_HOME = temp.stateHome;
     const bin = join(temp.root, "bin");
     const fakeClaude = join(bin, "claude");
-    const started = join(temp.root, "claude-started");
-    const exitNow = join(temp.root, "claude-exit");
     const name = uniqueRunName("claude-startup-exit");
 
     try {
       await mkdir(bin);
-      await writeFile(
-        fakeClaude,
-        `#!/bin/sh\nprintf 'started\\n' > ${JSON.stringify(started)}\nwhile [ ! -f ${JSON.stringify(exitNow)} ]; do sleep 0.01; done\nprintf 'startup dialog evidence\\n'\nexit 7\n`,
-        "utf8",
-      );
+      await writeFile(fakeClaude, "#!/bin/sh\nprintf 'startup dialog evidence\\n'\nexit 7\n", "utf8");
       await chmod(fakeClaude, 0o755);
 
-      const run = runCommand({
-        backend: "claude",
-        name,
-        cwd: temp.root,
-        env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, WUX_NOTIFY_PATH: "/tmp/wux-notify" },
-      });
-      await waitForArgv(started);
-      await writeFile(exitNow, "exit\n", "utf8");
       await expect(
-        run,
+        runCommand({
+          backend: "claude",
+          name,
+          cwd: temp.root,
+          env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, WUX_NOTIFY_PATH: "/tmp/wux-notify" },
+        }),
       ).rejects.toThrow(/exited-during-startup.*startup dialog evidence/s);
       const events = await readFile(join(runDir(name), "events.jsonl"), "utf8");
       expect(events).toContain('"result":"exited-during-startup"');
+      expect(events).toContain('"exitStatus":"7"');
       expect(events).toContain("startup dialog evidence");
       expect(await hasSession(`wux_${name}`)).toBe(false);
+    } finally {
+      await killTmux(name);
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("leaves claude print mode unchanged when it exits during startup", async () => {
+    if (!(await hasTmux())) return;
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const bin = join(temp.root, "bin");
+    const fakeClaude = join(bin, "claude");
+    const name = uniqueRunName("claude-print");
+
+    try {
+      await mkdir(bin);
+      await writeFile(fakeClaude, "#!/bin/sh\nprintf 'print-completed\\n'\nsleep 0.2\nexit 0\n", "utf8");
+      await chmod(fakeClaude, 0o755);
+
+      await expect(
+        runCommand({
+          backend: "claude",
+          name,
+          cwd: temp.root,
+          backendArgs: ["--print"],
+          env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, WUX_NOTIFY_PATH: "/tmp/wux-notify" },
+        }),
+      ).resolves.toMatchObject({ name, backend: "claude" });
+    } finally {
+      await killTmux(name);
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("leaves claude -p mode unchanged when it exits during startup", async () => {
+    if (!(await hasTmux())) return;
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const bin = join(temp.root, "bin");
+    const fakeClaude = join(bin, "claude");
+    const name = uniqueRunName("claude-print-short");
+
+    try {
+      await mkdir(bin);
+      await writeFile(fakeClaude, "#!/bin/sh\nprintf 'print-completed\\n'\nsleep 0.2\nexit 0\n", "utf8");
+      await chmod(fakeClaude, 0o755);
+
+      await expect(
+        runCommand({
+          backend: "claude",
+          name,
+          cwd: temp.root,
+          backendArgs: ["-p"],
+          env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, WUX_NOTIFY_PATH: "/tmp/wux-notify" },
+        }),
+      ).resolves.toMatchObject({ name, backend: "claude" });
     } finally {
       await killTmux(name);
       process.env.XDG_STATE_HOME = old;

@@ -399,6 +399,18 @@ describe("sendLiteral readiness-gated path", () => {
     expect(enterCount(sent)).toBe(0);
   });
 
+  test("labels a captured blank pane as no-composer", async () => {
+    const sent: string[][] = [];
+    const result = await sendLiteral("wux_x", "queued instruction", {
+      backend: "claude",
+      runner: recordingRunner(sent),
+      capture: frameCapture(["", "", "", ""]),
+      ...FAST_GATE,
+    });
+    expect(result).toEqual({ submission: "not-submitted", retried: false, reason: "no-composer" });
+    expect(enterCount(sent)).toBe(0);
+  });
+
   test("multi-line literal is typed in ONE -l and submitted with ONE Enter", async () => {
     const sent: string[][] = [];
     const rendered = "❯ line one\n  line two";

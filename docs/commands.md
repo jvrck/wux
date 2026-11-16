@@ -150,6 +150,9 @@ dialog.
 The startup check is a fixed, one-shot observation (about half a second) inside
 `run`, not a watcher. An exit after that observation is not classified as a
 startup exit; inspect `status` or the persisted pane log instead.
+`claude --print`/`-p` bypasses this interactive-only observation unchanged. The
+failure event records tmux's pane exit status when tmux provides it; otherwise it
+records `"unknown"` rather than inventing a status.
 
 `shell` keeps the unconditional fast path, and any other/unknown backend falls back
 to the legacy blind type+Enter. Set **`WUX_SEND_READINESS=0`** to revert every

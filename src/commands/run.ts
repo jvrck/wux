@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, rm } from "node:fs/promises";
+import { mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { backendCommand } from "../backends";
@@ -6,7 +6,7 @@ import { appendEvent } from "../runtime/events";
 import { WuxError } from "../runtime/errors";
 import { createRunMeta, saveRun, type RunBackend } from "../runtime/runs";
 import { runDir, runsRoot } from "../runtime/state";
-import { ambientTmuxConnection, createSession, discoverSocketPath, hasSession, killSession, paneDeadStatus } from "../runtime/tmux";
+import { ambientTmuxConnection, createSession, discoverSocketPath, hasSession, killSession, paneDeadStatus, setRemainOnExit } from "../runtime/tmux";
 
 export type { RunBackend } from "../runtime/runs";
 
@@ -63,13 +63,24 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
   let exitedDuringStartup = false;
   try {
     const paneLog = join(dir, "pane.log");
+    const startupGatePath = join(dir, "startup-ready");
+    const observeClaudeStartup = meta.backend === "claude" && !isClaudePrintMode(backendArgs);
     await touch(paneLog);
     await touch(join(dir, "events.jsonl"));
-    await createSession({ session: meta.tmuxSession, cwd: meta.cwd, command, logPath: paneLog, env: tmuxEnv, connection });
+    await createSession({
+      session: meta.tmuxSession,
+      cwd: meta.cwd,
+      command,
+      logPath: paneLog,
+      ...(observeClaudeStartup ? { startupGatePath } : {}),
+      env: tmuxEnv,
+      connection,
+    });
     sessionCreated = true;
     const tmuxSocketPath = await discoverSocketPath(meta.tmuxSession, connection);
     await saveRun({ ...meta, tmuxSocketPath });
-    if (meta.backend === "claude") {
+    if (observeClaudeStartup) {
+      await writeFile(startupGatePath, "ready\n", "utf8");
       await delay(CLAUDE_STARTUP_CHECK_MS);
       const live = await hasSession(meta.tmuxSession, connection);
       const exitStatus = live ? await paneDeadStatus(meta.tmuxSession, connection) : "unknown";
@@ -92,6 +103,7 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
         exitedDuringStartup = true;
         throw new WuxError(`exited-during-startup: ${meta.name}; pane tail:\n${paneTail || "(no pane output captured)"}`);
       }
+      await setRemainOnExit(meta.tmuxSession, false, connection);
     }
     await appendEvent(meta.name, { type: "create", backend: meta.backend, owner: meta.owner });
   } catch (error) {
@@ -116,6 +128,10 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
   }
 
   return { name: meta.name, backend: meta.backend, tmuxSession: meta.tmuxSession, cwd: meta.cwd, runDir: dir };
+}
+
+function isClaudePrintMode(backendArgs: string[]): boolean {
+  return backendArgs.includes("--print") || backendArgs.includes("-p");
 }
 
 async function paneLogTail(path: string, lines: number): Promise<string> {

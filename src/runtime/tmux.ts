@@ -240,6 +240,9 @@ export async function createSession(options: {
   cwd: string;
   command: string[];
   logPath: string;
+  // Delay the backend exec until the caller has finished its transactional
+  // startup wiring. This is used only for the short Claude startup observation.
+  startupGatePath?: string;
   env?: NodeJS.ProcessEnv;
   connection?: TmuxConnection;
   // Backward-compatible test injection; production callers pass `connection`.
@@ -292,6 +295,9 @@ export async function createSession(options: {
         throw new WuxError(`failed to elevate tmux history-limit: ${elevate.stderr || elevate.stdout}`.trim());
       }
       try {
+        const launchCommand = options.startupGatePath
+          ? ["/bin/sh", "-c", 'while [ ! -e "$1" ]; do sleep 0.01; done; shift; exec "$@"', "wux-startup", options.startupGatePath, ...options.command]
+          : options.command;
         const result = await runTmux(connection, [
           "-f",
           conf,
@@ -301,7 +307,7 @@ export async function createSession(options: {
           options.session,
           "-c",
           options.cwd,
-          ...options.command,
+          ...launchCommand,
         ]);
         sessionCreated = result.code === 0;
         return result;
@@ -329,6 +335,9 @@ export async function createSession(options: {
     // Pin the generous scrollback at session scope (outlives the global restore,
     // visible to show-options, and inherited by later panes/windows).
     await setSessionOption(options.session, "history-limit", WUX_HISTORY_LIMIT, connection);
+    if (options.startupGatePath) {
+      await setSessionOption(options.session, "remain-on-exit", "on", connection);
+    }
     // Mouse is contentious (it changes native click-drag selection), so it is
     // strictly opt-in and applied only at session scope — never globally and
     // never to the operator's ~/.tmux.conf.
@@ -354,6 +363,10 @@ export async function createSession(options: {
     }
     throw error;
   }
+}
+
+export async function setRemainOnExit(session: string, enabled: boolean, connection: TmuxConnection = ambientTmuxConnection()): Promise<void> {
+  await setSessionOption(session, "remain-on-exit", enabled ? "on" : "off", connection);
 }
 
 function errorText(error: unknown): string {
@@ -750,11 +763,11 @@ export async function sendLiteral(session: string, text: string, options: SendLi
     sleep,
   };
   let captureFailed = false;
-  let observedPane = false;
+  let capturedPane = false;
   const probe = (): Promise<string> =>
     capture(session, CLASSIFY_TAIL)
       .then((frame) => {
-        if (frame.trim().length > 0) observedPane = true;
+        capturedPane = true;
         return frame;
       })
       .catch(() => {
@@ -786,7 +799,7 @@ export async function sendLiteral(session: string, text: string, options: SendLi
   if (preReady === "busy") {
     submission = classifySubmission(before, await probe(), text, backend);
   } else if (gated && preReady === "unknown") {
-    if (observedPane) return { submission: "not-submitted", retried: false, reason: "no-composer" };
+    if (capturedPane) return { submission: "not-submitted", retried: false, reason: "no-composer" };
     return { submission: captureFailed ? "uncertain" : "not-submitted", retried: false };
   } else {
     await sendKeysOnce(connection, target, session, ["Enter"], "submit text to");
