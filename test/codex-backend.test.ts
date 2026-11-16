@@ -7,7 +7,7 @@ import { runCommand } from "../src/commands/run";
 import { sendCommand } from "../src/commands/send";
 import { resultCommand } from "../src/commands/result";
 import { waitCommand } from "../src/commands/wait";
-import { appendEvent, inputMessageDigest, readEvents } from "../src/runtime/events";
+import { inputMessageDigest, readEvents } from "../src/runtime/events";
 import { runDir } from "../src/runtime/state";
 import { runProcess } from "../src/runtime/process";
 import { hasSession } from "../src/runtime/tmux";
@@ -160,7 +160,6 @@ describe("codex backend", () => {
     const bin = join(temp.root, "bin");
     const fakeCodex = join(bin, "codex");
     const notifyWrapper = join(bin, "wux-notify");
-    const gate = join(temp.root, "emit-title");
     const titleSent = join(temp.root, "title-sent");
     const notifyPath = join(process.cwd(), "src", "bin", "wux-notify.ts");
     const name = uniqueRunName("codex-title-probe");
@@ -168,6 +167,7 @@ describe("codex backend", () => {
     const normalizedPrompt = "Reply with WUX_REAL_REPLY";
     const title = JSON.stringify({ type: "agent-turn-complete", "turn-id": "title-turn", "input-messages": [`Generate a concise title for: ${normalizedPrompt}`], "last-assistant-message": '{"title":"Reply"}' });
     const real = JSON.stringify({ type: "agent-turn-complete", "turn-id": "real-turn", "input-messages": [normalizedPrompt], "last-assistant-message": "WUX_REAL_REPLY" });
+    const oldReadiness = process.env.WUX_SEND_READINESS;
     let created = false;
 
     try {
@@ -180,7 +180,7 @@ describe("codex backend", () => {
       await chmod(notifyWrapper, 0o755);
       await writeFile(
         fakeCodex,
-        `#!/bin/sh\nwhile [ ! -e ${JSON.stringify(gate)} ]; do sleep 0.01; done\n${JSON.stringify(notifyWrapper)} ${JSON.stringify(name)} ${JSON.stringify(title)}\n: > ${JSON.stringify(titleSent)}\nsleep 30\n`,
+        `#!/bin/sh\nIFS= read -r ignored\n${JSON.stringify(notifyWrapper)} ${JSON.stringify(name)} ${JSON.stringify(title)}\n: > ${JSON.stringify(titleSent)}\nsleep 30\n`,
         "utf8",
       );
       await chmod(fakeCodex, 0o755);
@@ -196,8 +196,8 @@ describe("codex backend", () => {
         },
       });
       created = true;
-      await appendEvent(name, { type: "send", inputMessageDigest: inputMessageDigest(prompt) });
-      await writeFile(gate, "ready\n", "utf8");
+      process.env.WUX_SEND_READINESS = "0";
+      await sendCommand({ name, text: prompt, forceOwner: false });
       await waitForPath(titleSent);
 
       expect(await resultCommand({ name })).toMatchObject({ outcome: "unknown" });
@@ -210,6 +210,8 @@ describe("codex backend", () => {
       expect(await resultCommand({ name })).toMatchObject({ outcome: "done", completedVia: "hook", lastAssistantMessage: "WUX_REAL_REPLY" });
     } finally {
       if (created) await killTmux(name);
+      if (oldReadiness === undefined) delete process.env.WUX_SEND_READINESS;
+      else process.env.WUX_SEND_READINESS = oldReadiness;
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();
     }
