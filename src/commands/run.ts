@@ -15,6 +15,7 @@ import {
   paneDeadStatus,
   probeSession,
   setRemainOnExit,
+  socketTmuxConnection,
   unavailableTmuxMessage,
 } from "../runtime/tmux";
 
@@ -73,6 +74,7 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
 
   let sessionCreated = false;
   let startupExitReported = false;
+  let startupObservationUnavailable = false;
   try {
     const paneLog = join(dir, "pane.log");
     const startupGatePath = join(dir, "startup-ready");
@@ -92,23 +94,32 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
     const tmuxSocketPath = await discoverSocketPath(meta.tmuxSession, connection);
     await saveRun({ ...meta, tmuxSocketPath });
     if (observeClaudeStartup) {
+      // Startup observation must follow the exact server that created this run.
+      // An ambient connection maps a transport failure to "absent", which would
+      // falsely claim a live backend exited; a socket-bound probe preserves the
+      // authoritative unavailable state instead.
+      const startupConnection = socketTmuxConnection(tmuxSocketPath, { executable: connection.executable, env: tmuxEnv });
       await writeFile(startupGatePath, "ready\n", "utf8");
       await delay(CLAUDE_STARTUP_CHECK_MS);
+      const reportUnavailable = (detail: string | undefined): never => {
+        startupObservationUnavailable = true;
+        throw new WuxError(unavailableTmuxMessage(startupConnection, detail));
+      };
 
       const startupState = async (): Promise<string | undefined> => {
-        const probe = await probeSession(meta.tmuxSession, connection);
-        if (probe.state === "unavailable") throw new WuxError(unavailableTmuxMessage(connection, probe.detail));
+        const probe = await probeSession(meta.tmuxSession, startupConnection);
+        if (probe.state === "unavailable") return reportUnavailable(probe.detail);
         if (probe.state === "absent") return "unknown";
-        return paneDeadStatus(meta.tmuxSession, connection);
+        return paneDeadStatus(meta.tmuxSession, startupConnection);
       };
       const reportStartupExit = async (exitStatus: string): Promise<never> => {
         const paneTail = await paneLogTail(paneLog, STARTUP_PANE_TAIL_LINES);
         if ((await exists(`${startupGatePath}.timed-out`)) || paneTail.includes(STARTUP_GATE_TIMEOUT)) {
           throw new WuxError("startup gate timed out before claude launch; retry the run");
         }
-        const probe = await probeSession(meta.tmuxSession, connection);
-        if (probe.state === "unavailable") throw new WuxError(unavailableTmuxMessage(connection, probe.detail));
-        if (probe.state === "live") await killSession(meta.tmuxSession, connection);
+        const probe = await probeSession(meta.tmuxSession, startupConnection);
+        if (probe.state === "unavailable") return reportUnavailable(probe.detail);
+        if (probe.state === "live") await killSession(meta.tmuxSession, startupConnection);
         const stoppedAt = new Date().toISOString();
         await saveRun({ ...meta, tmuxSocketPath, status: "stopped", stoppedAt, updatedAt: stoppedAt });
         await appendEvent(meta.name, {
@@ -125,7 +136,7 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
 
       const exitStatus = await startupState();
       if (exitStatus !== undefined) await reportStartupExit(exitStatus);
-      await setRemainOnExit(meta.tmuxSession, false, connection);
+      await setRemainOnExit(meta.tmuxSession, false, startupConnection);
       // A process can exit while remain-on-exit is being toggled. Check once more
       // so an inert retained pane cannot be returned as a live worker.
       const exitAfterToggle = await startupState();
@@ -133,7 +144,7 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
     }
     await appendEvent(meta.name, { type: "create", backend: meta.backend, owner: meta.owner });
   } catch (error) {
-    if (startupExitReported) throw error;
+    if (startupExitReported || startupObservationUnavailable) throw error;
     const rollbackErrors: unknown[] = [];
     if (sessionCreated) {
       try {
