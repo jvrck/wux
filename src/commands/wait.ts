@@ -85,7 +85,10 @@ export async function resolveSignalSnapshot(meta: SnapshotMeta, probes: Snapshot
   // record superseded by a newer `send`/`interrupt` is treated as stale and
   // ignored, so a fresh turn never inherits a prior turn's outcome (no fabrication).
   const settled = await readSettled(meta.name);
-  if (settled) {
+  // Quiescence is valid completion evidence only for shell. Older versions could
+  // persist done/quiescence for interactive backends; preserve timeout/blocked
+  // settles from those versions, but never replay that false completion.
+  if (settled && (isShell || settled.completedVia !== "quiescence")) {
     return { outcome: settled.outcome, ...(settled.completedVia !== undefined ? { completedVia: settled.completedVia } : {}), observation };
   }
 
