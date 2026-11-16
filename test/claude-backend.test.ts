@@ -169,6 +169,83 @@ describe("claude backend", () => {
     }
   });
 
+  test("preserves the run for every startup-observation tmux transport failure", async () => {
+    if (!(await hasTmux())) return;
+    const tmuxPath = (await runProcess(["sh", "-c", "command -v tmux"])).stdout.trim();
+    expect(tmuxPath).not.toBe("");
+
+    for (const [failure, backend] of [
+      ["pane-dead", "#!/bin/sh\nprintf 'still running\\n'\nsleep 30\n"],
+      ["remain-off", "#!/bin/sh\nprintf 'still running\\n'\nsleep 30\n"],
+      ["kill-session", "#!/bin/sh\nprintf 'startup exit\\n'\nexit 7\n"],
+    ] as const) {
+      const temp = await tempState();
+      const old = process.env.XDG_STATE_HOME;
+      process.env.XDG_STATE_HOME = temp.stateHome;
+      const bin = join(temp.root, "bin");
+      const fakeClaude = join(bin, "claude");
+      const fakeTmux = join(bin, "tmux");
+      const failureMarker = join(temp.root, "tmux-failure-used");
+      const name = uniqueRunName(`claude-startup-${failure}`);
+      let created = false;
+
+      try {
+        await mkdir(bin);
+        await writeFile(fakeClaude, backend, "utf8");
+        await chmod(fakeClaude, 0o755);
+        const wrapper = [
+          "#!/bin/sh",
+          "matched=0",
+          'case "$WUX_STARTUP_TMUX_FAILURE" in',
+          "  pane-dead)",
+          "    for arg in \"$@\"; do [ \"$arg\" = '#{pane_dead}:#{pane_dead_status}' ] && matched=1; done",
+          "    ;;",
+          '  remain-off) case "$*" in *"set-option"*"remain-on-exit off"*) matched=1;; esac ;;',
+          '  kill-session) case "$*" in *"kill-session"*) matched=1;; esac ;;',
+          "esac",
+          'if [ "$matched" = 1 ] && [ ! -e "$WUX_STARTUP_TMUX_FAILURE_MARKER" ]; then',
+          '  : > "$WUX_STARTUP_TMUX_FAILURE_MARKER"',
+          '  echo "permission denied" >&2',
+          "  exit 1",
+          "fi",
+          `exec ${JSON.stringify(tmuxPath)} "$@"`,
+          "",
+        ].join("\n");
+        await writeFile(fakeTmux, wrapper, "utf8");
+        await chmod(fakeTmux, 0o755);
+
+        await expect(
+          runCommand({
+            backend: "claude",
+            name,
+            cwd: temp.root,
+            env: {
+              ...process.env,
+              PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
+              WUX_NOTIFY_PATH: "/tmp/wux-notify",
+              WUX_STARTUP_TMUX_FAILURE: failure,
+              WUX_STARTUP_TMUX_FAILURE_MARKER: failureMarker,
+            },
+          }),
+        ).rejects.toThrow(/tmux server is unavailable/);
+        created = true;
+        expect((await readFile(failureMarker, "utf8")).length).toBe(0);
+        const events = await readFile(join(runDir(name), "events.jsonl"), "utf8");
+        expect(events).not.toContain("exited-during-startup");
+        const meta = JSON.parse(await readFile(join(runDir(name), "meta.json"), "utf8"));
+        expect(meta.status).toBe("running");
+        expect(await hasSession(`wux_${name}`)).toBe(true);
+        await killTmux(name);
+        created = false;
+        expect(await hasSession(`wux_${name}`)).toBe(false);
+      } finally {
+        if (created) await killTmux(name);
+        process.env.XDG_STATE_HOME = old;
+        await temp.cleanup();
+      }
+    }
+  });
+
   test("leaves claude --print unchanged when it exits during startup", async () => {
     if (!(await hasTmux())) return;
     const temp = await tempState();
