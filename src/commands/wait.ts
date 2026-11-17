@@ -65,12 +65,12 @@ export async function resolveSignalSnapshot(meta: SnapshotMeta, probes: Snapshot
   const isShell = meta.backend === "shell";
 
   const observation = isShell ? { signal: undefined, lastTurnInputAt: null } : await readObservation(meta.name);
-  const hook = observation.signal;
+  const hook = currentTurnSignal(meta.backend, observation);
   if (!isShell && hook?.signal === "turn-complete") {
-    return { outcome: "done", completedVia: "hook", observation };
+    return { outcome: "done", completedVia: "hook", observation: { ...observation, signal: hook } };
   }
   if (!isShell && hook?.signal === "awaiting-approval") {
-    return { outcome: "blocked", completedVia: "hook", observation };
+    return { outcome: "blocked", completedVia: "hook", observation: { ...observation, signal: hook } };
   }
 
   const sentinel = isShell ? undefined : await probeSentinel(meta.name, observation.lastTurnInputAt);
@@ -96,7 +96,7 @@ export async function resolveSignalSnapshot(meta: SnapshotMeta, probes: Snapshot
   // measure quiescence (that needs an idle window only `wait` polls), so the
   // outcome stays unknown rather than fabricating a completion — true for a
   // never-`wait`ed shell run and idle claude/codex runs alike.
-  return { outcome: "unknown", observation };
+  return { outcome: "unknown", observation: { ...observation, signal: hook } };
 }
 
 interface WaitRunMeta {
@@ -179,7 +179,7 @@ export async function waitCommand(options: WaitOptions): Promise<WaitResult> {
   while (true) {
     const observedAt = now();
     const signalObservation = meta.backend === "shell" ? undefined : await readBackendSignalObservation(meta.name);
-    const hook = signalObservation?.signal;
+    const hook = signalObservation ? currentTurnSignal(meta.backend, signalObservation) : undefined;
     if (hook?.signal === "turn-complete") {
       return settle({ ...baseResult(meta.name, "done", idleMs, timeoutMs, elapsed(startedAt, observedAt), pollIntervalMs), completedVia: "hook" });
     }
@@ -248,6 +248,13 @@ export async function probeSentinelSignal(name: string, lastTurnInputAt: string 
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
   }
+}
+
+export function currentTurnSignal(backend: string, observation: BackendSignalObservation) {
+  const signal = observation.signal;
+  if (signal?.explicit === true) return signal;
+  if (backend !== "codex" || signal?.signal !== "turn-complete") return signal;
+  return observation.lastTurnInputDigest !== undefined && signal.inputMessageDigest === observation.lastTurnInputDigest ? signal : undefined;
 }
 
 export function waitExitCode(result: WaitResult): number {

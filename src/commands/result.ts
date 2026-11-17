@@ -4,7 +4,7 @@ import { readBackendSignalObservation } from "../runtime/events";
 import { WuxError } from "../runtime/errors";
 import { loadRun as loadRunMeta } from "../runtime/runs";
 import { runDir } from "../runtime/state";
-import { type CompletedVia, resolveSignalSnapshot, type WaitOutcome, type WaitResult } from "./wait";
+import { currentTurnSignal, type CompletedVia, resolveSignalSnapshot, type WaitOutcome, type WaitResult } from "./wait";
 
 // Backend-agnostic result envelope composed read-only from existing run state.
 // It answers "what did this run produce?" by surfacing the worker's last turn
@@ -117,6 +117,7 @@ export async function waitResultEnvelope(
   loadRun: (name: string) => Promise<ResultRunMeta> = loadRunMeta,
 ): Promise<ResultEnvelope> {
   const meta = await loadRun(result.name);
-  const signal = meta.backend === "shell" ? undefined : (await readBackendSignalObservation(result.name)).signal;
+  const observation = meta.backend === "shell" ? undefined : await readBackendSignalObservation(result.name);
+  const signal = observation ? currentTurnSignal(meta.backend, observation) : undefined;
   return buildResultEnvelope(result.name, result.outcome, result.completedVia, signal);
 }

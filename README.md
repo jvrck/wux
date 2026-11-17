@@ -143,8 +143,12 @@ runs you drive yourself by following those pointers — plus a cooperative
 pane-log sentinel and `read --json`. There are no git/gh/PR/test connectors.
 
 The `completedVia` ladder (`hook` | `sentinel` | `quiescence`) never advertises
-more than a backend can deliver: `claude` and `codex` require a current-turn hook
-or sentinel signal, while the `shell` backend has process-aware **quiescence**
+more than a backend can deliver: `claude` requires a current-turn hook or
+sentinel signal, while Codex additionally requires an exact, fail-closed hook
+match to the latest trimmed sent input. Repeated identical unresolved Codex sends
+remain ambiguous rather than fabricating completion; a Codex hook observed before
+its send resolves is usable only if that delivery records `submitted` (failed,
+uncertain, and unresolved deliveries remain unknown). The `shell` backend has process-aware **quiescence**
 (no completion hook) — frame-hash silence gated on a foreground-process probe
 that confirms via tmux `#{pane_pid}`/`#{pane_current_command}` that the shell's
 prompt has returned before declaring `done`, so a silent-but-busy run resolves
