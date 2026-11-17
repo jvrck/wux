@@ -10,6 +10,10 @@ intentionally not reproduced here.
 
 ## Unreleased
 
+## 2026.11.17
+
+No breaking changes.
+
 ### Fixed
 
 - Made interactive Claude startup exits fail with a pane tail instead of
