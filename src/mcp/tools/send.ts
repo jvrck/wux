@@ -1,8 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { sendCommand, type SendResult } from "../../commands/send";
+import { enterDispositionText, resendDispositionText, sendCommand, type ReportedSendResult, type SendResult } from "../../commands/send";
 import { bufferIO } from "../../runtime/io";
-import { tmuxSessionName } from "../../runtime/tmux";
+import { tmuxSessionName, type EnterDisposition, type ResendDisposition } from "../../runtime/tmux";
 import { forwardSshCommand } from "../../transport/ssh";
 import { ensureFeature } from "../capability";
 import { identityFor } from "../target";
@@ -18,7 +18,8 @@ export function register(server: McpServer, ctx: ToolContext): void {
         "Send literal text plus Enter to a live run and report whether the backend accepted the submit. " +
         "Inspectable durable TUI session control — not autonomous task execution. " +
         "The submission verdict is a heuristic over the pane, not an end-of-turn signal; " +
-        "a non-submitted verdict is a warning, never a clean success. target is required (mutation).",
+        "enter reports whether the first Enter was sent or withheld as busy, and resend reports any retry decision. " +
+        "A non-submitted verdict is a warning, never a clean success. target is required (mutation).",
       inputSchema: {
         name: z.string().min(1),
         text: z.string(),
@@ -63,7 +64,15 @@ export function register(server: McpServer, ctx: ToolContext): void {
   );
 }
 
-function parseSendResult(stdout: string): SendResult | null {
+function isEnterDisposition(value: unknown): value is EnterDisposition {
+  return value === "sent" || value === "withheld-busy" || value === "withheld-busy-queueable";
+}
+
+function isResendDisposition(value: unknown): value is ResendDisposition {
+  return value === "sent" || value === "skipped-busy" || value === "skipped-unknown" || value === "not-needed";
+}
+
+function parseSendResult(stdout: string): ReportedSendResult | null {
   const trimmed = stdout.trim();
   if (trimmed.length === 0) return null;
   try {
@@ -74,7 +83,14 @@ function parseSendResult(stdout: string): SendResult | null {
       typeof value.retried === "boolean" &&
       typeof value.bytes === "number"
     ) {
-      return value as SendResult;
+      return {
+        name: value.name,
+        submission: value.submission as SendResult["submission"],
+        enter: isEnterDisposition(value.enter) ? value.enter : null,
+        resend: isResendDisposition(value.resend) ? value.resend : null,
+        retried: value.retried,
+        bytes: value.bytes,
+      };
     }
   } catch {
     // Not JSON (e.g. an older remote wux without --json) — fall back to passthrough.
@@ -85,18 +101,20 @@ function parseSendResult(stdout: string): SendResult | null {
 // Shape a SendResult into the tool payload. The submission verdict is always
 // surfaced; a non-submitted verdict adds an explicit `warning` so a client never
 // mistakes it for a clean success. Exported for unit-testing the shaping.
-export function sendPayload(resolved: ResolvedTarget, result: SendResult): Record<string, unknown> {
+export function sendPayload(resolved: ResolvedTarget, result: ReportedSendResult): Record<string, unknown> {
   const submitted = result.submission === "submitted";
   const payload: Record<string, unknown> = {
     identity: identityFor(resolved, result.name, tmuxSessionName(result.name)),
     name: result.name,
     bytes: result.bytes,
     submission: result.submission,
+    enter: result.enter,
+    resend: result.resend,
     retried: result.retried,
     submitted,
   };
   if (!submitted) {
-    payload.warning = `${result.name} may not have submitted (${result.submission}${result.retried ? ", retried" : ""}); this is not a clean success`;
+    payload.warning = `${result.name} may not have submitted (${result.submission}; ${enterDispositionText(result.enter)}; ${resendDispositionText(result.resend)}); this is not a clean success`;
   }
   return payload;
 }

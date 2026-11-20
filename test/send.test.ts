@@ -46,6 +46,8 @@ describe("send", () => {
       const events = await readFile(join(dir, "events.jsonl"), "utf8");
       expect(events).toContain('"type":"send"');
       expect(events).toContain(`"bytes":${Buffer.byteLength(text)}`);
+      expect(events).toContain('"enter":"sent"');
+      expect(events).toContain('"resend":"not-needed"');
       expect(events).not.toContain(text);
     } finally {
       if (created) await killTmux(name);
@@ -117,10 +119,12 @@ describe("send", () => {
       created = true;
       const text = "echo verdict-ok";
       const result = await sendCommand({ name, text, forceOwner: false });
-      expect(result).toMatchObject({ name, submission: "submitted", retried: false });
+      expect(result).toMatchObject({ name, submission: "submitted", enter: "sent", resend: "not-needed", retried: false });
       expect(result.bytes).toBe(Buffer.byteLength(text));
       const events = await readFile(join(temp.stateHome, "wux", "runs", name, "events.jsonl"), "utf8");
       expect(events).toContain('"submission":"submitted"');
+      expect(events).toContain('"enter":"sent"');
+      expect(events).toContain('"resend":"not-needed"');
       expect(events).toContain('"retried":false');
     } finally {
       if (created) await killTmux(name);
@@ -145,7 +149,7 @@ describe("send", () => {
       const code = await runCli(["--local", "send", name, "--json", text], memory.io);
       expect(code).toBe(0);
       const out = JSON.parse(memory.output().stdout.trim());
-      expect(out).toEqual({ name, submission: "submitted", retried: false, bytes: Buffer.byteLength(text) });
+      expect(out).toEqual({ name, submission: "submitted", enter: "sent", resend: "not-needed", retried: false, bytes: Buffer.byteLength(text) });
       expect(memory.output().stderr).toBe("");
     } finally {
       if (created) await killTmux(name);
@@ -323,7 +327,7 @@ describe("sendLiteral readiness-gated path", () => {
       capture: frameCapture(frames),
       ...FAST_GATE,
     });
-    expect(result).toEqual({ submission: "submitted", retried: false });
+    expect(result).toEqual({ submission: "submitted", enter: "sent", resend: "not-needed", retried: false });
     expect(enterCount(sent)).toBe(1);
     // The literal is typed in one -l (gate only the submit, never the type).
     expect(sent.some((args) => args.includes("-l") && args.includes("hello there"))).toBe(true);
@@ -345,7 +349,7 @@ describe("sendLiteral readiness-gated path", () => {
       capture: frameCapture(frames),
       ...FAST_GATE,
     });
-    expect(result).toEqual({ submission: "submitted", retried: true });
+    expect(result).toEqual({ submission: "submitted", enter: "sent", resend: "sent", retried: true });
     expect(enterCount(sent)).toBe(2); // initial + one resend
   });
 
@@ -360,7 +364,7 @@ describe("sendLiteral readiness-gated path", () => {
       capture: frameCapture(frames),
       ...FAST_GATE,
     });
-    expect(result).toEqual({ submission: "not-submitted", retried: false });
+    expect(result).toEqual({ submission: "not-submitted", enter: "withheld-busy", resend: "skipped-busy", retried: false });
     // No Enter is sent at all — pressing Enter into a pane the gate positively sees
     // as busy is a dropped no-op that just re-strands the (already typed) literal.
     expect(enterCount(sent)).toBe(0);
@@ -382,8 +386,122 @@ describe("sendLiteral readiness-gated path", () => {
       capture: frameCapture(frames),
       ...FAST_GATE,
     });
-    expect(result).toEqual({ submission: "not-submitted", retried: false });
+    expect(result).toEqual({ submission: "not-submitted", enter: "withheld-busy", resend: "skipped-busy", retried: false });
     expect(enterCount(sent)).toBe(0);
+  });
+
+  test("reports a queueable Codex busy pane without sending Tab", async () => {
+    const sent: string[][] = [];
+    const queueable = await readFile(join(import.meta.dir, "fixtures", "composer", "codex-busy-queueable.txt"), "utf8");
+    const frames = ["› ", queueable, queueable, queueable, queueable];
+    const result = await sendLiteral("wux_x", "queued instruction", {
+      backend: "codex",
+      runner: recordingRunner(sent),
+      capture: frameCapture(frames),
+      ...FAST_GATE,
+    });
+    expect(result).toEqual({ submission: "not-submitted", enter: "withheld-busy-queueable", resend: "skipped-busy", retried: false });
+    expect(enterCount(sent)).toBe(0);
+    expect(sent.flat()).not.toContain("Tab");
+  });
+
+  test("does not mistake a transcript mention of tab to queue for a busy Codex pane", async () => {
+    const sent: string[][] = [];
+    const idle = "● The earlier transcript said tab to queue.\n› queued instruction";
+    const submitted = "● The earlier transcript said tab to queue.\n• Working\n› ";
+    const frames = ["› ", idle, idle, idle, submitted];
+    const result = await sendLiteral("wux_x", "queued instruction", {
+      backend: "codex",
+      runner: recordingRunner(sent),
+      capture: frameCapture(frames),
+      ...FAST_GATE,
+    });
+    expect(result).toEqual({ submission: "submitted", enter: "sent", resend: "not-needed", retried: false });
+    expect(enterCount(sent)).toBe(1);
+  });
+
+  test("does not treat queue text in the Codex composer as queueable", async () => {
+    const sent: string[][] = [];
+    const busy = "› queued instruction tab to queue\n  Working · esc to interrupt";
+    const frames = ["› ", busy, busy, busy, busy];
+    const result = await sendLiteral("wux_x", "queued instruction tab to queue", {
+      backend: "codex",
+      runner: recordingRunner(sent),
+      capture: frameCapture(frames),
+      ...FAST_GATE,
+    });
+    expect(result.enter).toBe("withheld-busy");
+  });
+
+  test("does not treat queue text above the Codex composer as queueable", async () => {
+    const sent: string[][] = [];
+    const busy = "● Earlier output: tab to queue\n• Working · esc to interrupt\n› queued instruction";
+    const frames = ["› ", busy, busy, busy, busy];
+    const result = await sendLiteral("wux_x", "queued instruction", {
+      backend: "codex",
+      runner: recordingRunner(sent),
+      capture: frameCapture(frames),
+      ...FAST_GATE,
+    });
+    expect(result.enter).toBe("withheld-busy");
+  });
+
+  test("does not let a queueable footer without a busy indicator withhold Enter", async () => {
+    const sent: string[][] = [];
+    const idle = "› queued instruction\n  tab to queue message";
+    const submitted = "• Working\n› ";
+    const frames = ["› ", idle, idle, idle, submitted];
+    const result = await sendLiteral("wux_x", "queued instruction", {
+      backend: "codex",
+      runner: recordingRunner(sent),
+      capture: frameCapture(frames),
+      ...FAST_GATE,
+    });
+    expect(result).toEqual({ submission: "submitted", enter: "sent", resend: "not-needed", retried: false });
+  });
+
+  test("never reports a Claude pane as queueable", async () => {
+    const sent: string[][] = [];
+    const busy = "❯ queued instruction\n  Working · esc to interrupt · tab to queue";
+    const frames = ["❯ ", busy, busy, busy, busy];
+    const result = await sendLiteral("wux_x", "queued instruction", {
+      backend: "claude",
+      runner: recordingRunner(sent),
+      capture: frameCapture(frames),
+      ...FAST_GATE,
+    });
+    expect(result).toEqual({ submission: "not-submitted", enter: "withheld-busy", resend: "skipped-busy", retried: false });
+    expect(enterCount(sent)).toBe(0);
+  });
+
+  test("reports why a stranded resend is skipped when the pane remains busy", async () => {
+    const sent: string[][] = [];
+    const strand = "› queued instruction";
+    const busy = `${strand}\n• Working (1s • esc to interrupt)`;
+    const frames = ["› ", strand, strand, strand, strand, busy, busy, busy, strand];
+    const result = await sendLiteral("wux_x", "queued instruction", {
+      backend: "codex",
+      runner: recordingRunner(sent),
+      capture: frameCapture(frames),
+      ...FAST_GATE,
+    });
+    expect(result).toEqual({ submission: "not-submitted", enter: "sent", resend: "skipped-busy", retried: false });
+    expect(enterCount(sent)).toBe(1);
+  });
+
+  test("reports why a stranded resend is skipped when the pane cannot be re-observed", async () => {
+    const sent: string[][] = [];
+    const strand = "❯ queued instruction";
+    const ghost = '❯ Try "something else"';
+    const frames = ["❯ ", strand, strand, strand, strand, ghost, ghost, ghost, strand];
+    const result = await sendLiteral("wux_x", "queued instruction", {
+      backend: "claude",
+      runner: recordingRunner(sent),
+      capture: frameCapture(frames),
+      ...FAST_GATE,
+    });
+    expect(result).toEqual({ submission: "not-submitted", enter: "sent", resend: "skipped-unknown", retried: false });
+    expect(enterCount(sent)).toBe(1);
   });
 
   test("multi-line literal is typed in ONE -l and submitted with ONE Enter", async () => {
@@ -396,7 +514,7 @@ describe("sendLiteral readiness-gated path", () => {
       capture: frameCapture(frames),
       ...FAST_GATE,
     });
-    expect(result).toEqual({ submission: "submitted", retried: false });
+    expect(result).toEqual({ submission: "submitted", enter: "sent", resend: "not-needed", retried: false });
     const literalSends = sent.filter((args) => args.includes("-l"));
     expect(literalSends.length).toBe(1);
     expect(literalSends[0]).toContain("line one\nline two");
@@ -439,7 +557,7 @@ describe("sendLiteral legacy/degrade paths", () => {
         return "";
       },
     });
-    expect(result).toEqual({ submission: "submitted", retried: false });
+    expect(result).toEqual({ submission: "submitted", enter: "sent", resend: "not-needed", retried: false });
     expect(captures).toBe(0);
   });
 
@@ -459,7 +577,7 @@ describe("sendLiteral legacy/degrade paths", () => {
         return next();
       },
     });
-    expect(result).toEqual({ submission: "submitted", retried: false });
+    expect(result).toEqual({ submission: "submitted", enter: "sent", resend: "not-needed", retried: false });
     expect(captures).toBe(2); // before + one re-observe only (no readiness probe)
     expect(enterCount(sent)).toBe(1);
   });
@@ -475,7 +593,7 @@ describe("sendLiteral legacy/degrade paths", () => {
       runner: recordingRunner(sent),
       capture: frameCapture(frames),
     });
-    expect(result).toEqual({ submission: "submitted", retried: true });
+    expect(result).toEqual({ submission: "submitted", enter: "sent", resend: "sent", retried: true });
     expect(enterCount(sent)).toBe(2);
   });
 
@@ -489,7 +607,7 @@ describe("sendLiteral legacy/degrade paths", () => {
       runner: recordingRunner(sent),
       capture: frameCapture(frames),
     });
-    expect(result).toEqual({ submission: "submitted", retried: false });
+    expect(result).toEqual({ submission: "submitted", enter: "sent", resend: "not-needed", retried: false });
     expect(enterCount(sent)).toBe(1);
   });
 
@@ -502,7 +620,7 @@ describe("sendLiteral legacy/degrade paths", () => {
         throw new Error("pane gone");
       },
     });
-    expect(result).toEqual({ submission: "uncertain", retried: false });
+    expect(result).toEqual({ submission: "uncertain", enter: "sent", resend: "skipped-unknown", retried: false });
   });
 });
 
@@ -545,15 +663,55 @@ describe("classifyComposerReady", () => {
     expect(classifyComposerReady([frame, frame], "document the esc to interrupt hint")).toBe("ready");
   });
 
-  test("busy: frames still changing between samples (streaming/redraw)", () => {
-    const a = "❯ summarize the readme\n  thinking 1";
-    const b = "❯ summarize the readme\n  thinking 2";
+  test("busy: composer text still changes between samples", () => {
+    const a = "❯ summarize the readme";
+    const b = "❯ summarize the readme please";
     expect(classifyComposerReady([a, b], "summarize the readme")).toBe("busy");
   });
 
   test("real fixture: claude at-rest with the pending literal is ready", async () => {
     const frame = await composer("claude-atrest-pending");
     expect(classifyComposerReady([frame, frame], "please summarize the readme")).toBe("ready");
+  });
+
+  test("fixtures: idle claude banner redraws keep a static composer ready", async () => {
+    const [first, second] = await Promise.all([composer("claude-atrest-redraw-a"), composer("claude-atrest-redraw-b")]);
+    expect(classifyComposerReady([first, second], "please summarize the readme")).toBe("ready");
+  });
+
+  test("never reads an interruptible status row as ready, even after an idle redraw", async () => {
+    const idle = await composer("claude-atrest-redraw-b");
+    const busy = `${idle}\n  ⏵⏵ bypass permissions on · esc to interrupt`;
+    expect(classifyComposerReady([idle, busy], "please summarize the readme")).toBe("busy");
+  });
+
+  test("keeps a previous busy frame busy after the current frame looks idle", () => {
+    const busy = "❯ please summarize the readme\n  esc to interrupt";
+    const idle = "❯ please summarize the readme";
+    expect(classifyComposerReady([busy, idle], "please summarize the readme")).toBe("busy");
+  });
+
+  test("keeps an output-area redraw without an interrupt hint out of the ready state", () => {
+    const first = "● first streamed output\n❯ please summarize the readme";
+    const second = "● second streamed output\n❯ please summarize the readme";
+    expect(classifyComposerReady([first, second], "please summarize the readme")).toBe("busy");
+  });
+
+  test("keeps a changing rounded output box out of the ready state", () => {
+    const first = "╭─ result ─╮\n│ first value │\n╰─────────────╯\n❯ please summarize the readme";
+    const second = "╭─ result ─╮\n│ second value │\n╰─────────────╯\n❯ please summarize the readme";
+    expect(classifyComposerReady([first, second], "please summarize the readme")).toBe("busy");
+  });
+
+  test("keeps a changing unclosed rounded output box out of the ready state", () => {
+    const first = "╭─ result ─╮\n│ first value\n❯ please summarize the readme";
+    const second = "╭─ result ─╮\n│ second value\n❯ please summarize the readme";
+    expect(classifyComposerReady([first, second], "please summarize the readme")).toBe("busy");
+  });
+
+  test("an idle transcript mention of tab to queue remains ready", () => {
+    const frame = "● Earlier text: tab to queue\n› summarize the readme please";
+    expect(classifyComposerReady([frame, frame], "summarize the readme please", "codex")).toBe("ready");
   });
 
   test("real fixture: claude at-rest EMPTY (ghost) is not ready for a typed literal", async () => {
@@ -576,6 +734,11 @@ describe("classifyComposerReady", () => {
   test("real fixture: codex at-rest with the pending literal is ready", async () => {
     const frame = await composer("codex-atrest-pending");
     expect(classifyComposerReady([frame, frame], "summarize the readme please")).toBe("ready");
+  });
+
+  test("fixtures: idle codex banner redraws keep a static composer ready", async () => {
+    const [first, second] = await Promise.all([composer("codex-atrest-redraw-a"), composer("codex-atrest-redraw-b")]);
+    expect(classifyComposerReady([first, second], "summarize the readme please")).toBe("ready");
   });
 
   test("real fixture: codex busy pane is not ready", async () => {
