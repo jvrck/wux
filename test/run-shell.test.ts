@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { shellCommand } from "../src/backends/shell";
 import { backendCommand } from "../src/backends";
+import { pruneRuns } from "../src/commands/prune";
 import { runCommand } from "../src/commands/run";
 import { runProcess } from "../src/runtime/process";
 import { loadRun, validateRunName } from "../src/runtime/runs";
@@ -65,6 +66,40 @@ describe("shell run lifecycle", () => {
       await expect(runCommand({ backend: "shell", name, cwd: temp.root })).rejects.toThrow("already exists");
     } finally {
       if (created) await killTmux(name);
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("keeps an immediate shell launch failure with its pane exit and output", async () => {
+    if (!(await hasTmux())) return;
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("shell-launch-failure");
+    const dir = join(temp.stateHome, "wux", "runs", name);
+
+    try {
+      await expect(
+        runCommand({
+          backend: "shell",
+          name,
+          cwd: temp.root,
+          env: { SHELL: "/bin/sh" },
+          backendArgs: ["-c", "echo boom; exit 3"],
+        }),
+      ).rejects.toThrow(/pane exited \(status 3\):[\s\S]*boom/);
+
+      expect((await loadRun(name)).status).toBe("failed");
+      const events = await readFile(join(dir, "events.jsonl"), "utf8");
+      expect(events).toContain('"type":"launch-error"');
+      expect(events).toContain('"exitStatus":"3"');
+
+      await expect(runCommand({ backend: "shell", name, cwd: temp.root })).rejects.toThrow(`run already exists: ${name}`);
+      const pruned = await pruneRuns({ olderThanMs: 0, dryRun: false });
+      expect(pruned.entries).toContainEqual({ name, action: "pruned" });
+      await expect(stat(dir)).rejects.toThrow();
+    } finally {
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();
     }
