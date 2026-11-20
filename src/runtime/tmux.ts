@@ -1,4 +1,4 @@
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, stat, unlink, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { WuxError } from "./errors";
 import { withLock } from "./lock";
@@ -35,6 +35,21 @@ export interface TmuxSessionProbe {
 // and optional exact socket placement. Callers supply tmux subcommands only.
 export function ambientTmuxConnection(options: TmuxConnectionOptions = {}): TmuxConnection {
   return makeTmuxConnection(undefined, options);
+}
+
+// Record whether the ambient default socket existed before Wux starts a run.
+// A later launch failure may remove only a socket that was absent here, which
+// keeps stale sockets from Wux-created servers without touching an operator's.
+export async function ambientSocketExisted(env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  const socketPath = ambientSocketPath(env);
+  if (!socketPath) return true;
+  try {
+    return (await lstat(socketPath)).isSocket();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    // A permission or filesystem failure is not ownership evidence.
+    return true;
+  }
 }
 
 export function socketTmuxConnection(socketPath: string, options: TmuxConnectionOptions = {}): TmuxConnection {
@@ -390,6 +405,31 @@ export async function killSession(session: string, connection: TmuxConnection = 
   if (result.code !== 0) {
     throw new WuxError(`failed to stop ${session}: ${result.stderr || result.stdout}`.trim());
   }
+}
+
+// tmux can leave its socket file behind after its last session exits. Callers
+// pass `createdByWux` only when that exact ambient socket was absent before
+// launch. The list-sessions check prevents removing a socket for a live server.
+export async function removeCreatedSocket(socketPath: string, connection: TmuxConnection, createdByWux: boolean): Promise<void> {
+  if (!createdByWux || connection.socketPath !== socketPath) return;
+  const sessions = await runTmux(connection, ["list-sessions"]);
+  if (sessions.code === 0) return;
+  const detail = (sessions.stderr || sessions.stdout).trim();
+  if (!isDefinitivelyAbsentTmuxDetail(detail)) return;
+  try {
+    if ((await lstat(socketPath)).isSocket()) await unlink(socketPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+}
+
+function ambientSocketPath(env: NodeJS.ProcessEnv): string | undefined {
+  const currentSocket = env.TMUX?.match(/^(.*),\d+,\d+$/)?.[1];
+  if (currentSocket) return currentSocket;
+  const uid = process.getuid?.();
+  if (uid === undefined) return undefined;
+  return join(env.TMUX_TMPDIR || "/tmp", `tmux-${uid}`, "default");
 }
 
 // Honest-submit verdict. This is a HEURISTIC over the pane, not an end-of-turn

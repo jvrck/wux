@@ -105,6 +105,32 @@ describe("shell run lifecycle", () => {
     }
   });
 
+  test("removes its isolated tmux socket after an immediate shell launch failure", async () => {
+    if (!(await hasTmux())) return;
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("shell-launch-socket");
+    const socketParent = join(temp.root, "isolated-tmux");
+    const env = { ...process.env, XDG_STATE_HOME: temp.stateHome, TMUX_TMPDIR: socketParent, SHELL: "/bin/sh" } as NodeJS.ProcessEnv;
+    delete env.TMUX;
+
+    try {
+      await mkdir(socketParent, { recursive: true });
+      await expect(
+        runCommand({ backend: "shell", name, cwd: temp.root, env, backendArgs: ["-c", "echo boom; exit 3"] }),
+      ).rejects.toThrow(/pane exited \(status 3\):[\s\S]*boom/);
+
+      const socketPath = (await loadRun(name)).tmuxSocketPath;
+      expect(typeof socketPath).toBe("string");
+      if (typeof socketPath !== "string") throw new Error("failed launch did not retain its tmux socket path");
+      await expect(stat(socketPath)).rejects.toThrow();
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
   test("uses RunOptions.env for creation and socket discovery", async () => {
     if (!(await hasTmux())) return;
     const temp = await tempState();

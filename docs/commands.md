@@ -115,6 +115,13 @@ All four backends share the same lifecycle, metadata, logging, send/read, attach
 
 `--json` prints the creation envelope `{name, tmuxSession, backend}`.
 
+If a pane exits while `run` is still launching it, Wux reports the proven pane
+exit status and a sanitized tail of its output. Its run directory is retained
+with `status: "failed"` and a `launch-error` event for inspection; the same name
+cannot be reused until the retained run is explicitly pruned. Wux only removes
+the just-created session through its exact creating socket, never an unrelated
+tmux server.
+
 ## Send
 
 ```bash
@@ -434,19 +441,19 @@ repo-local helper script is not placed by the installer.
 wux prune --days 30 --dry-run
 wux prune --days 30
 wux prune --older-than 7d --dry-run
-wux prune --older-than 0s --dry-run   # name every stopped run; delete nothing
+wux prune --older-than 0s --dry-run   # name every stopped or failed run; delete nothing
 wux prune --prefix batch- --reconcile --older-than 0 --dry-run
 ```
 
-`prune` scans run state under `$XDG_STATE_HOME/wux/runs` or `~/.local/state/wux/runs`, skips active metadata and live tmux sessions, and removes only stopped run directories older than the cutoff. `--prefix` narrows that scan to run names beginning with the supplied plain-text prefix. `--dry-run` names each candidate directory without deleting it and never lists a running run as a candidate. With `--reconcile`, dry-run prints `would reconcile and prune <name>` when one pass would perform both steps, or `would reconcile <name>` when the age cutoff would keep it. `--reconcile` explicitly finalizes active records only when their tmux session is definitively absent; unavailable servers are never reconciled. The default retention is 30 days. Prune is explicit only; normal commands never auto-delete logs, and logs are not compressed.
+`prune` scans run state under `$XDG_STATE_HOME/wux/runs` or `~/.local/state/wux/runs`, skips active metadata and live tmux sessions, and removes only stopped or failed run directories older than the cutoff. `--prefix` narrows that scan to run names beginning with the supplied plain-text prefix. `--dry-run` names each candidate directory without deleting it and never lists a running run as a candidate. With `--reconcile`, dry-run prints `would reconcile and prune <name>` when one pass would perform both steps, or `would reconcile <name>` when the age cutoff would keep it. `--reconcile` explicitly finalizes active records only when their tmux session is definitively absent; unavailable servers are never reconciled. The default retention is 30 days. Prune is explicit only; normal commands never auto-delete logs, and logs are not compressed.
 
 ### Age selection
 
-The age cutoff has exact, exclusive semantics: a stopped run is a candidate when its **latest retention timestamp** (the max of `stoppedAt` and the `meta.json`/`pane.log`/`events.jsonl` mtimes) is **strictly older** than `now` minus the cutoff — i.e. it was "stopped more than `<cutoff>` ago". A run exactly at the boundary is kept, not pruned.
+The age cutoff has exact, exclusive semantics: a stopped or failed run is a candidate when its **latest retention timestamp** (the max of `stoppedAt` and the `meta.json`/`pane.log`/`events.jsonl` mtimes) is **strictly older** than `now` minus the cutoff. A run exactly at the boundary is kept, not pruned.
 
 - `--older-than <duration>` accepts `ms`, `s`, `m`, `h`, or `d` suffixes; a bare number is milliseconds. For example `--older-than 30s`, `--older-than 10m`, `--older-than 2h`, `--older-than 7d`. (This is a superset of [`wux wait`](#wait)'s `ms`/`s`-only durations — `--older-than` adds `m`/`h`/`d` so a coarse age cutoff like `7d` reads naturally.)
 - `--days <n>` is the day-granularity alias and is exactly equivalent to `--older-than <n>d`. Supply one of `--older-than` / `--days`, not both. `--days` keeps its long-standing positive-integer contract.
-- `--older-than 0` (or `0s`) is the explicit **"select every stopped run regardless of age"** path, intended for cleaning up just-created disposable runs. It ignores the retention timestamp entirely, so a seconds-old (or even timestamp-less) stopped run is selected. Combined with `--dry-run` it names every stopped run and deletes nothing — the safe way for an operator (or agent) to assert exactly which directories a prune would remove. There is no default-aggressive behavior: `0` must be passed explicitly.
+- `--older-than 0` (or `0s`) is the explicit **"select every stopped or failed run regardless of age"** path, intended for cleaning up just-created disposable runs. It ignores the retention timestamp entirely, so a seconds-old (or even timestamp-less) stopped or failed run is selected. Combined with `--dry-run` it names every stopped or failed run and deletes nothing — the safe way for an operator (or agent) to assert exactly which directories a prune would remove. There is no default-aggressive behavior: `0` must be passed explicitly.
 
 Running runs and runs with an active status (`running`, `waiting`, `blocked`) are never candidates at any cutoff, including `--older-than 0`, unless `--reconcile` proves the session is definitively gone.
 

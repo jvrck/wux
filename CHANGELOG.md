@@ -10,6 +10,11 @@ intentionally not reproduced here.
 
 ## Unreleased
 
+### Fixed
+
+- Preserved immediate launch failures with their pane exit status and output,
+  retained run evidence, and explicit failed-run pruning.
+
 ## 2026.11.17
 
 No breaking changes.
