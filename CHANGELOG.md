@@ -12,8 +12,9 @@ intentionally not reproduced here.
 
 ### Fixed
 
-- Preserved immediate launch failures with their pane exit status and output,
-  retained run evidence, and explicit failed-run pruning.
+- Preserved non-zero immediate launch failures with their pane exit status and
+  output, retained evidence, and explicit failed-run pruning; a proven zero
+  launch exit is finalized as stopped.
 
 ## 2026.11.17
 

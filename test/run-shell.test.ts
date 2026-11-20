@@ -120,6 +120,7 @@ describe("shell run lifecycle", () => {
       ).resolves.toMatchObject({ name });
 
       expect((await loadRun(name)).status).toBe("stopped");
+      expect(await hasSession(`wux_${name}`)).toBe(false);
       const events = await readFile(join(dir, "events.jsonl"), "utf8");
       expect(events).toContain('"exitStatus":"0"');
       expect(events).not.toContain('"type":"launch-error"');

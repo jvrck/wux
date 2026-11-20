@@ -1,5 +1,5 @@
-import { lstat, mkdir, stat, unlink, writeFile } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { lstat, mkdir, realpath, stat, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { WuxError } from "./errors";
 import { withLock } from "./lock";
 import { processCommandName, runInteractiveProcess, runProcess, type ProcessResult } from "./process";
@@ -37,18 +37,33 @@ export function ambientTmuxConnection(options: TmuxConnectionOptions = {}): Tmux
   return makeTmuxConnection(undefined, options);
 }
 
-// Record whether the ambient default socket existed before Wux starts a run.
-// A later launch failure may remove only a socket that was absent here, which
-// keeps stale sockets from Wux-created servers without touching an operator's.
-export async function ambientSocketExisted(env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
-  const socketPath = ambientSocketPath(env);
-  if (!socketPath) return true;
+export interface CreatedSocket {
+  path: string;
+  device: number;
+  inode: number;
+}
+
+// The ambient path Wux would ask tmux to use. It is only an expected path; a
+// socket is considered Wux-created later only after `recordCreatedSocket` has
+// positively proved first-session ownership on this exact path.
+export async function ambientSocketPath(env: NodeJS.ProcessEnv = process.env): Promise<string | undefined> {
+  const currentSocket = env.TMUX?.match(/^(.*),\d+,\d+$/)?.[1];
+  if (currentSocket) return canonicalSocketPath(currentSocket);
+  const uid = process.getuid?.();
+  if (uid === undefined) return undefined;
+  const socketRoot = env.TMUX_TMPDIR || "/tmp";
   try {
-    return (await lstat(socketPath)).isSocket();
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-    // A permission or filesystem failure is not ownership evidence.
-    return true;
+    return join(await realpath(socketRoot), `tmux-${uid}`, "default");
+  } catch {
+    return join(socketRoot, `tmux-${uid}`, "default");
+  }
+}
+
+async function canonicalSocketPath(socketPath: string): Promise<string> {
+  try {
+    return join(await realpath(dirname(socketPath)), basename(socketPath));
+  } catch {
+    return socketPath;
   }
 }
 
@@ -187,6 +202,29 @@ export async function discoverSocketPath(session: string, connection: TmuxConnec
     throw new WuxError(`failed to discover tmux socket for ${session}: ${result.stderr || result.stdout}`.trim());
   }
   return socketPath;
+}
+
+// Prove ownership at server creation rather than inferring it from an earlier
+// filesystem observation. tmux assigns its first-ever session `$0`; if another
+// server won the launch race, this run receives a later id and no cleanup right
+// is granted. The recorded device/inode prevents an operator's replacement
+// socket from being unlinked later.
+export async function recordCreatedSocket(
+  session: string,
+  socketPath: string,
+  expectedAmbientSocketPath: string | undefined,
+  connection: TmuxConnection,
+): Promise<CreatedSocket | undefined> {
+  if (expectedAmbientSocketPath !== socketPath || connection.socketPath !== socketPath) return undefined;
+  const sessionId = await runTmux(connection, ["display-message", "-p", "-t", exactPaneTarget(session), "-F", "#{session_id}"]);
+  if (sessionId.code !== 0 || sessionId.stdout.trim() !== "$0") return undefined;
+  try {
+    const info = await lstat(socketPath);
+    if (!info.isSocket()) return undefined;
+    return { path: socketPath, device: info.dev, inode: info.ino };
+  } catch {
+    return undefined;
+  }
 }
 
 function exactTarget(session: string): string {
@@ -407,29 +445,28 @@ export async function killSession(session: string, connection: TmuxConnection = 
   }
 }
 
-// tmux can leave its socket file behind after its last session exits. Callers
-// pass `createdByWux` only when that exact ambient socket was absent before
-// launch. The list-sessions check prevents removing a socket for a live server.
-export async function removeCreatedSocket(socketPath: string, connection: TmuxConnection, createdByWux: boolean): Promise<void> {
-  if (!createdByWux || connection.socketPath !== socketPath) return;
+// tmux can leave a Wux-created socket file behind after its last session exits.
+// Re-check that the server is gone and that the original socket inode still
+// occupies the path immediately before unlinking; otherwise leave it alone.
+export async function removeCreatedSocket(createdSocket: CreatedSocket | undefined, connection: TmuxConnection): Promise<void> {
+  if (!createdSocket || connection.socketPath !== createdSocket.path) return;
   const sessions = await runTmux(connection, ["list-sessions"]);
   if (sessions.code === 0) return;
   const detail = (sessions.stderr || sessions.stdout).trim();
   if (!isDefinitivelyAbsentTmuxDetail(detail)) return;
   try {
-    if ((await lstat(socketPath)).isSocket()) await unlink(socketPath);
+    const info = await lstat(createdSocket.path);
+    if (!info.isSocket() || info.dev !== createdSocket.device || info.ino !== createdSocket.inode) return;
+    const finalSessions = await runTmux(connection, ["list-sessions"]);
+    if (finalSessions.code === 0 || !isDefinitivelyAbsentTmuxDetail((finalSessions.stderr || finalSessions.stdout).trim())) return;
+    const finalInfo = await lstat(createdSocket.path);
+    if (finalInfo.isSocket() && finalInfo.dev === createdSocket.device && finalInfo.ino === createdSocket.inode) {
+      await unlink(createdSocket.path);
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
   }
-}
-
-function ambientSocketPath(env: NodeJS.ProcessEnv): string | undefined {
-  const currentSocket = env.TMUX?.match(/^(.*),\d+,\d+$/)?.[1];
-  if (currentSocket) return currentSocket;
-  const uid = process.getuid?.();
-  if (uid === undefined) return undefined;
-  return join(env.TMUX_TMPDIR || "/tmp", `tmux-${uid}`, "default");
 }
 
 // Honest-submit verdict. This is a HEURISTIC over the pane, not an end-of-turn

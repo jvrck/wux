@@ -60,10 +60,10 @@ export async function statusRows(): Promise<StatusRow[]> {
 }
 
 export function deriveStatus(run: RunMeta, live: boolean): DisplayStatus {
-  if (run.status === "failed") return "failed";
   if (live && (run.status === "waiting" || run.status === "blocked")) return run.status;
   if (live) return "running";
   if (run.status === "stopped") return "stopped";
+  if (run.status === "failed") return "failed";
   return "unknown";
 }
 

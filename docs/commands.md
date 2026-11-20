@@ -115,12 +115,16 @@ All four backends share the same lifecycle, metadata, logging, send/read, attach
 
 `--json` prints the creation envelope `{name, tmuxSession, backend}`.
 
-If a pane exits while `run` is still launching it, Wux reports the proven pane
-exit status and a sanitized tail of its output. Its run directory is retained
-with `status: "failed"` and a `launch-error` event for inspection; the same name
-cannot be reused until the retained run is explicitly pruned. Wux only removes
-the just-created session through its exact creating socket, never an unrelated
-tmux server.
+After opening a new pane, `run` makes one bounded 25 ms launch observation; it
+does not watch, retry, or relaunch a worker. A non-zero or unknown pane exit in
+that window reports the proven exit status and a sanitized output tail. Its run
+directory is retained with `status: "failed"` and a `launch-error` event for
+inspection; the same name cannot be reused until the retained run is explicitly
+pruned. A proven zero exit in that window is retained and finalized as
+`status: "stopped"` with its exit status in the create event, and `run` succeeds.
+An exit later than this one-shot window follows normal lifecycle behavior. Wux
+only removes a socket after proving it created that exact server, never an
+unrelated tmux server.
 
 ## Send
 

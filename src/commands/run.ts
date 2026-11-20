@@ -8,13 +8,14 @@ import { createRunMeta, saveRun, type RunBackend } from "../runtime/runs";
 import { runDir, runsRoot } from "../runtime/state";
 import {
   ambientTmuxConnection,
-  ambientSocketExisted,
+  ambientSocketPath,
   createSession,
   discoverSocketPath,
   hasSession,
   killSession,
   paneDeadStatus,
   probeSession,
+  recordCreatedSocket,
   removeCreatedSocket,
   setRemainOnExit,
   socketTmuxConnection,
@@ -60,7 +61,7 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
   // command sees the same TMUX/TMUX_TMPDIR selection as new-session.
   const tmuxEnv = options.env ? { ...process.env, ...options.env } : undefined;
   const connection = ambientTmuxConnection({ env: tmuxEnv });
-  const ambientSocketWasPresent = await ambientSocketExisted(tmuxEnv);
+  const expectedAmbientSocketPath = await ambientSocketPath(tmuxEnv);
   if (await hasSession(meta.tmuxSession, connection)) {
     throw new WuxError(`tmux session already exists: ${meta.tmuxSession}`);
   }
@@ -79,6 +80,7 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
   let startupExitReported = false;
   let startupObservationUnavailable = false;
   let launchFailureReported = false;
+  let launchExitFinalized = false;
   try {
     const paneLog = join(dir, "pane.log");
     const startupGatePath = join(dir, "startup-ready");
@@ -101,6 +103,7 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
     const tmuxSocketPath = await discoverSocketPath(meta.tmuxSession, connection);
     await saveRun({ ...meta, tmuxSocketPath });
     const startupConnection = socketTmuxConnection(tmuxSocketPath, { executable: connection.executable, env: tmuxEnv });
+    const createdSocket = await recordCreatedSocket(meta.tmuxSession, tmuxSocketPath, expectedAmbientSocketPath, startupConnection);
     await writeFile(startupGatePath, "ready\n", "utf8");
     if (observeClaudeStartup) {
       // Startup observation must follow the exact server that created this run.
@@ -173,12 +176,28 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
       // lifecycle watcher or retry loop.
       await delay(25);
       const launchExit = await launchExitStatus(meta.tmuxSession, startupConnection);
-      if (launchExit !== undefined) await reportLaunchFailure(launchExit);
-      await setRemainOnExit(meta.tmuxSession, false, startupConnection);
-      const exitAfterToggle = await launchExitStatus(meta.tmuxSession, startupConnection);
-      if (exitAfterToggle !== undefined) await reportLaunchFailure(exitAfterToggle);
+      if (launchExit !== undefined) {
+        if (launchExit === "0") {
+          await reportLaunchSuccess(launchExit);
+        } else {
+          await reportLaunchFailure(launchExit);
+        }
+      }
+      if (!launchExitFinalized) {
+        await setRemainOnExit(meta.tmuxSession, false, startupConnection);
+        const exitAfterToggle = await launchExitStatus(meta.tmuxSession, startupConnection);
+        if (exitAfterToggle !== undefined) {
+          if (exitAfterToggle === "0") {
+            await reportLaunchSuccess(exitAfterToggle);
+          } else {
+            await reportLaunchFailure(exitAfterToggle);
+          }
+        }
+      }
     }
-    await appendEvent(meta.name, { type: "create", backend: meta.backend, owner: meta.owner });
+    if (!launchExitFinalized) {
+      await appendEvent(meta.name, { type: "create", backend: meta.backend, owner: meta.owner });
+    }
 
     async function launchExitStatus(session: string, launchConnection: ReturnType<typeof socketTmuxConnection>): Promise<string | undefined> {
       const pane = await paneDeadStatus(session, launchConnection);
@@ -187,6 +206,36 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
       const probe = await probeSession(session, launchConnection);
       if (probe.state === "absent") return "unknown";
       throw new WuxError(unavailableTmuxMessage(launchConnection, probe.detail ?? pane.detail));
+    }
+
+    async function reportLaunchSuccess(exitStatus: string): Promise<void> {
+      const paneTail = await paneLogTail(paneLog, STARTUP_PANE_TAIL_LINES);
+      const probe = await probeSession(meta.tmuxSession, startupConnection);
+      if (probe.state === "unavailable") {
+        throw new WuxError(unavailableTmuxMessage(startupConnection, probe.detail));
+      }
+      if (probe.state === "live") {
+        try {
+          await killSession(meta.tmuxSession, startupConnection);
+        } catch (error) {
+          const afterKill = await probeSession(meta.tmuxSession, startupConnection);
+          if (afterKill.state === "live") throw error;
+          if (afterKill.state === "unavailable") {
+            throw new WuxError(unavailableTmuxMessage(startupConnection, afterKill.detail));
+          }
+        }
+      }
+      const stoppedAt = new Date().toISOString();
+      await saveRun({ ...meta, tmuxSocketPath, status: "stopped", stoppedAt, updatedAt: stoppedAt });
+      await appendEvent(meta.name, {
+        type: "create",
+        backend: meta.backend,
+        owner: meta.owner,
+        result: "exited-during-launch",
+        exitStatus,
+        paneTail,
+      });
+      launchExitFinalized = true;
     }
 
     async function reportLaunchFailure(exitStatus: string): Promise<never> {
@@ -206,7 +255,7 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
           }
         }
       }
-      await removeCreatedSocket(tmuxSocketPath, startupConnection, !ambientSocketWasPresent);
+      await removeCreatedSocket(createdSocket, startupConnection);
       const failedAt = new Date().toISOString();
       await saveRun({ ...meta, tmuxSocketPath, status: "failed", updatedAt: failedAt });
       await appendEvent(meta.name, {
