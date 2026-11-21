@@ -130,6 +130,61 @@ describe("shell run lifecycle", () => {
     }
   });
 
+  test("retains a startup gate timeout with its cause before the backend runs", async () => {
+    if (!(await hasTmux())) return;
+    const realTmux = Bun.which("tmux");
+    if (!realTmux) return;
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("shell-gate-timeout");
+    const dir = join(temp.stateHome, "wux", "runs", name);
+    const bin = join(temp.root, "bin");
+    const fakeTmux = join(bin, "tmux");
+    const fakeSleep = join(bin, "sleep");
+    const backendMarker = join(temp.root, "backend-ran");
+    const env = {
+      ...process.env,
+      XDG_STATE_HOME: temp.stateHome,
+      TMUX_TMPDIR: join(temp.root, "tmux"),
+      WUX_REAL_TMUX: realTmux,
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      SHELL: "/bin/sh",
+      TMUX: "",
+    } as NodeJS.ProcessEnv;
+
+    try {
+      await mkdir(bin, { recursive: true });
+      await writeFile(
+        fakeTmux,
+        "#!/bin/sh\nseen_target=\nfor arg in \"$@\"; do\n  [ \"$arg\" = -t ] && seen_target=1\n  [ \"$seen_target\" = 1 ] && [ \"$arg\" = history-limit ] && /bin/sleep 3\ndone\nexec \"$WUX_REAL_TMUX\" \"$@\"\n",
+        "utf8",
+      );
+      await writeFile(fakeSleep, "#!/bin/sh\nexit 0\n", "utf8");
+      await chmod(fakeTmux, 0o755);
+      await chmod(fakeSleep, 0o755);
+
+      await expect(
+        runCommand({
+          backend: "shell",
+          name,
+          cwd: temp.root,
+          env,
+          backendArgs: ["-c", `: > ${JSON.stringify(backendMarker)}`],
+        }),
+      ).rejects.toThrow(/startup gate timed out/);
+
+      await expect(stat(backendMarker)).rejects.toThrow();
+      expect((await loadRun(name)).status).toBe("failed");
+      const events = await readFile(join(dir, "events.jsonl"), "utf8");
+      expect(events).toContain('"type":"launch-error"');
+      expect(events).toContain('"cause":"startup-gate-timeout"');
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  }, 10_000);
+
   test("removes its isolated tmux socket after an immediate shell launch failure", async () => {
     if (!(await hasTmux())) return;
     const temp = await tempState();
