@@ -237,6 +237,42 @@ describe("send", () => {
       await temp.cleanup();
     }
   });
+
+  test("a real Codex pane cannot combine a historical head with a new tail", async () => {
+    if (!(await hasTmux())) return;
+    const temp = await tempState();
+    const oldStateHome = process.env.XDG_STATE_HOME;
+    const oldReadiness = process.env.WUX_SEND_READINESS;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const bin = join(temp.root, "bin");
+    const fakeCodex = join(bin, "codex");
+    const ready = join(temp.root, "fake-ready");
+    const name = uniqueRunName("send-stale-head-codex");
+    const text = "first sent line\nsecond sent line\nthird sent line";
+    let created = false;
+
+    try {
+      await mkdir(bin);
+      await writeFile(
+        fakeCodex,
+        `#!/bin/sh\nprintf 'first sent line\\n› \\n'\n: > ${JSON.stringify(ready)}\nstty raw -echo\ndd bs=1 count=1 of=/dev/null 2>/dev/null\nprintf 'second sent line\\nthird sent line\\n› \\n'\nsleep 30\n`,
+        "utf8",
+      );
+      await chmod(fakeCodex, 0o755);
+      await runCommand({ backend: "codex", name, cwd: temp.root, env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` } });
+      created = true;
+      await waitForPath(ready);
+      process.env.WUX_SEND_READINESS = "0";
+
+      expect(await sendCommand({ name, text, forceOwner: false })).toMatchObject({ submission: "truncated", retried: false });
+    } finally {
+      if (created) await killTmux(name);
+      if (oldReadiness === undefined) delete process.env.WUX_SEND_READINESS;
+      else process.env.WUX_SEND_READINESS = oldReadiness;
+      process.env.XDG_STATE_HOME = oldStateHome;
+      await temp.cleanup();
+    }
+  });
 });
 
 describe("classifySubmission", () => {
@@ -310,6 +346,21 @@ describe("classifySubmission", () => {
     expect(classifySubmission(before, echoed, text, "claude")).toBe("submitted");
     expect(classifySubmission(staleTailBefore, staleTailCollapsed, text, "claude")).toBe("uncertain");
     expect(classifySubmission(partialHistory, completedAfterPartialHistory, text, "claude")).toBe("submitted");
+  });
+
+  test("requires the whole transcript echo to occupy one new contiguous region", () => {
+    const text = "first sent line\nsecond sent line\nthird sent line";
+    const staleHead = ["first sent line", "● Earlier assistant output", "❯ "].join("\n");
+    const staleHeadWithNewTail = ["first sent line", "● Earlier assistant output", "second sent line", "third sent line", "❯ "].join("\n");
+    const wholeNewRegion = ["first sent line", "● Earlier assistant output", "first sent line", "second sent line", "third sent line", "❯ "].join("\n");
+    const historicalWholePrompt = ["first sent line", "second sent line", "third sent line", "● Earlier assistant output", "❯ "].join("\n");
+    const historicalAndNewWholePrompt = ["first sent line", "second sent line", "third sent line", "● Earlier assistant output", "first sent line", "second sent line", "third sent line", "❯ "].join("\n");
+    const onlyNewMiddleLine = ["first sent line", "● Earlier assistant output", "second sent line", "❯ "].join("\n");
+
+    expect(classifySubmission(staleHead, staleHeadWithNewTail, text, "claude")).toBe("truncated");
+    expect(classifySubmission(staleHead, wholeNewRegion, text, "claude")).toBe("submitted");
+    expect(classifySubmission(historicalWholePrompt, historicalAndNewWholePrompt, text, "claude")).toBe("submitted");
+    expect(classifySubmission(staleHead, onlyNewMiddleLine, text, "claude")).toBe("uncertain");
   });
 
   test("an unchanged frame with the text off the composer is uncertain", () => {
