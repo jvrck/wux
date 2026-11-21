@@ -1,4 +1,5 @@
-import { lstat, mkdir, realpath, stat, unlink, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { WuxError } from "./errors";
 import { withLock } from "./lock";
@@ -207,8 +208,9 @@ export async function discoverSocketPath(session: string, connection: TmuxConnec
 // Prove ownership at server creation rather than inferring it from an earlier
 // filesystem observation. tmux assigns its first-ever session `$0`; if another
 // server won the launch race, this run receives a later id and no cleanup right
-// is granted. The recorded device/inode prevents an operator's replacement
-// socket from being unlinked later.
+// is granted. A sessionless operator server can also yield `$0`, so later
+// server-absence checks still gate cleanup. The recorded device/inode prevents
+// an operator's replacement socket from being unlinked later.
 export async function recordCreatedSocket(
   session: string,
   socketPath: string,
@@ -445,10 +447,19 @@ export async function killSession(session: string, connection: TmuxConnection = 
   }
 }
 
+export interface RemoveCreatedSocketOptions {
+  // Test seam for the post-validation replacement race. Production callers omit it.
+  beforeQuarantine?: () => Promise<void>;
+}
+
 // tmux can leave a Wux-created socket file behind after its last session exits.
 // Re-check that the server is gone and that the original socket inode still
 // occupies the path immediately before unlinking; otherwise leave it alone.
-export async function removeCreatedSocket(createdSocket: CreatedSocket | undefined, connection: TmuxConnection): Promise<void> {
+export async function removeCreatedSocket(
+  createdSocket: CreatedSocket | undefined,
+  connection: TmuxConnection,
+  options: RemoveCreatedSocketOptions = {},
+): Promise<void> {
   if (!createdSocket || connection.socketPath !== createdSocket.path) return;
   const sessions = await runTmux(connection, ["list-sessions"]);
   if (sessions.code === 0) return;
@@ -456,16 +467,49 @@ export async function removeCreatedSocket(createdSocket: CreatedSocket | undefin
   if (!isDefinitivelyAbsentTmuxDetail(detail)) return;
   try {
     const info = await lstat(createdSocket.path);
-    if (!info.isSocket() || info.dev !== createdSocket.device || info.ino !== createdSocket.inode) return;
+    if (!socketMatchesCreated(info, createdSocket)) return;
     const finalSessions = await runTmux(connection, ["list-sessions"]);
     if (finalSessions.code === 0 || !isDefinitivelyAbsentTmuxDetail((finalSessions.stderr || finalSessions.stdout).trim())) return;
     const finalInfo = await lstat(createdSocket.path);
-    if (finalInfo.isSocket() && finalInfo.dev === createdSocket.device && finalInfo.ino === createdSocket.inode) {
-      await unlink(createdSocket.path);
+    if (!socketMatchesCreated(finalInfo, createdSocket)) return;
+    await options.beforeQuarantine?.();
+
+    // Moving the path first closes the path-based check-then-unlink window: a
+    // replacement that arrives after the final lstat is moved to the quarantine
+    // name, where its identity is checked before any unlink. A replacement that
+    // arrives after the move remains at the original path untouched.
+    const quarantinePath = join(dirname(createdSocket.path), `.${basename(createdSocket.path)}.wux-${process.pid}-${randomUUID()}`);
+    try {
+      await rename(createdSocket.path, quarantinePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
     }
+    const quarantined = await lstat(quarantinePath);
+    if (socketMatchesCreated(quarantined, createdSocket)) {
+      await unlink(quarantinePath);
+      return;
+    }
+    await restoreQuarantinedSocket(quarantinePath, createdSocket.path);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
+  }
+}
+
+function socketMatchesCreated(info: Awaited<ReturnType<typeof lstat>>, createdSocket: CreatedSocket): boolean {
+  return info.isSocket() && info.dev === createdSocket.device && info.ino === createdSocket.inode;
+}
+
+async function restoreQuarantinedSocket(quarantinePath: string, socketPath: string): Promise<void> {
+  try {
+    // link fails rather than overwriting if another process has already claimed
+    // socketPath. On filesystems that reject socket hard links, leave the
+    // quarantined entry intact rather than risk deleting an operator's socket.
+    await link(quarantinePath, socketPath);
+    await unlink(quarantinePath);
+  } catch {
+    process.stderr.write(`wux: preserved replacement tmux socket at ${quarantinePath}\n`);
   }
 }
 

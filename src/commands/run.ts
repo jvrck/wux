@@ -185,6 +185,9 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
       }
       if (!launchExitFinalized) {
         await setRemainOnExit(meta.tmuxSession, false, startupConnection);
+        // A zero exit that races this toggle can lose the retained pane before
+        // its status is readable; report that unproven outcome as unknown rather
+        // than claiming successful completion.
         const exitAfterToggle = await launchExitStatus(meta.tmuxSession, startupConnection);
         if (exitAfterToggle !== undefined) {
           if (exitAfterToggle === "0") {
@@ -225,6 +228,7 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
           }
         }
       }
+      await removeCreatedSocket(createdSocket, startupConnection);
       const stoppedAt = new Date().toISOString();
       await saveRun({ ...meta, tmuxSocketPath, status: "stopped", stoppedAt, updatedAt: stoppedAt });
       await appendEvent(meta.name, {

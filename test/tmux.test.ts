@@ -136,13 +136,7 @@ test("quarantines a replacement that arrives after socket identity validation", 
         return { code: 1, stdout: "", stderr: "no server running on socket" };
       },
     });
-    const removeWithHook = removeCreatedSocket as unknown as (
-      created: { path: string; device: number; inode: number },
-      target: ReturnType<typeof socketTmuxConnection>,
-      hooks: { beforeQuarantine: () => Promise<void> },
-    ) => Promise<void>;
-
-    await removeWithHook(
+    await removeCreatedSocket(
       { path: socketPath, device: originalIdentity.dev, inode: originalIdentity.ino },
       connection,
       {
