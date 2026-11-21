@@ -10,6 +10,9 @@ intentionally not reproduced here.
 
 ## Unreleased
 
+- Fixed interactive send verification so a stale transcript head cannot combine
+  with a newly captured tail and be reported as submitted.
+
 ## 2026.11.17
 
 No breaking changes.

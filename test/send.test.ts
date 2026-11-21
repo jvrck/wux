@@ -312,7 +312,7 @@ describe("classifySubmission", () => {
     expect(classifySubmission(before, fixture, text, "claude")).toBe("truncated");
     expect(classifySubmission(before, ["first sent line", "❯ ", "────"].join("\n"), text, "claude")).toBe("uncertain");
     expect(classifySubmission(before, ["first sent line", "third sent line", "❯ ", "────"].join("\n"), text, "claude")).toBe("uncertain");
-    expect(classifySubmission(before, ["first sent line", "second sent line", "third sent line", "❯ ", "────"].join("\n"), text, "claude")).toBe("submitted");
+    expect(classifySubmission(before, ["● Earlier assistant output", "first sent line", "second sent line", "third sent line", "❯ ", "────"].join("\n"), text, "claude")).toBe("submitted");
     expect(classifySubmission(before, ["second sent line", "unrelated output", "second sent line", "❯ ", "────"].join("\n"), text, "claude")).toBe("uncertain");
     expect(classifySubmission(before, ["❯ first sent line", "second sent line", "third sent line"].join("\n"), text, "claude")).toBe("not-submitted");
   });
@@ -641,7 +641,7 @@ describe("sendLiteral legacy/degrade paths", () => {
   test("kill-switch (readiness:false) reverts to the legacy blind type+Enter+classify", async () => {
     const sent: string[][] = [];
     let captures = 0;
-    const frames = ["baseline", "❯ do the thing\nthinking…\n❯ "]; // before, after (echoed submitted) — no gate captures
+    const frames = ["baseline", "baseline\n❯ do the thing\nthinking…\n❯ "]; // before, after (echoed submitted) — no gate captures
     const next = frameCapture(frames);
     const result = await sendLiteral("wux_x", "do the thing", {
       backend: "claude",
@@ -661,7 +661,7 @@ describe("sendLiteral legacy/degrade paths", () => {
 
   test("legacy path still does the single blind retry on not-submitted", async () => {
     const sent: string[][] = [];
-    const frames = ["baseline", "> printf 'hi'", "> printf 'hi'\nworking…\n> "]; // before, after-1 (strand), after-retry (echoed submitted)
+    const frames = ["baseline", "> printf 'hi'", "baseline\n> printf 'hi'\nworking…\n> "]; // before, after-1 (strand), after-retry (echoed submitted)
     const result = await sendLiteral("wux_x", "printf 'hi'", {
       backend: "claude",
       readiness: false,

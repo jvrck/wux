@@ -630,22 +630,34 @@ export function classifySubmission(before: string, after: string, text: string, 
 }
 
 // A transcript echo is submission evidence only when a complete ordered
-// occurrence is NEW relative to the pre-send frame. A tail without its head is
-// distinct, but its tail must be new too: historical text never proves delivery
-// of this send.
+// occurrence is inside one contiguous region appended after the pre-send frame.
+// A tail without its head is distinct, but its tail must be in that new region:
+// historical text never proves delivery of this send.
 function classifyTranscriptEvidence(beforeClean: string, afterClean: string, needles: string[]): Submission | undefined {
   const beforeTranscript = transcriptLines(beforeClean);
   const afterTranscript = transcriptLines(afterClean);
-  if (orderedOccurrenceCount(afterTranscript, needles) > orderedOccurrenceCount(beforeTranscript, needles)) return "submitted";
+  const newRegion = appendedTranscriptRegion(beforeTranscript, afterTranscript);
+  if (newRegion === undefined) return undefined;
+  if (hasOrderedOccurrence(newRegion, needles)) return "submitted";
 
   const head = needles[0];
   const tail = needles.at(-1)!;
-  const afterTailCount = matchingLineCount(afterTranscript, tail);
-  const beforeTailCount = matchingLineCount(beforeTranscript, tail);
-  if (afterTailCount > beforeTailCount && matchingLineCount(afterTranscript, head) <= matchingLineCount(beforeTranscript, head)) {
-    return "truncated";
+  if (!newRegion.some((line) => line.includes(head)) && newRegion.some((line) => line.includes(tail))) return "truncated";
+  if (needles.some((needle) => newRegion.some((line) => line.includes(needle)))) return "uncertain";
+  return undefined;
+}
+
+// tmux captures can lose the top of a scrolling pane between samples. The only
+// trustworthy added region begins after the longest preserved tail of `before`
+// that is still the prefix of `after`; without such an anchor, strict callers
+// do not turn old transcript text into a successful send verdict.
+function appendedTranscriptRegion(before: string[], after: string[]): string[] | undefined {
+  if (before.length === 0) return after;
+  const longest = Math.min(before.length, after.length);
+  for (let overlap = longest; overlap > 0; overlap -= 1) {
+    const beforeTail = before.slice(-overlap);
+    if (beforeTail.every((line, index) => line.trimEnd() === after[index].trimEnd())) return after.slice(overlap);
   }
-  if (needles.some((needle) => matchingLineCount(afterTranscript, needle) > matchingLineCount(beforeTranscript, needle))) return "uncertain";
   return undefined;
 }
 
@@ -664,37 +676,14 @@ function transcriptLines(frame: string): string[] {
   return lines.slice(0, composerIndex);
 }
 
-function matchingLineCount(lines: string[], needle: string): number {
-  return lines.filter((line) => line.includes(needle)).length;
-}
-
-function orderedOccurrenceCount(lines: string[], needles: string[]): number {
-  let count = 0;
-  let start = 0;
-  while (start < lines.length) {
-    let occurrenceEnd: number | undefined;
-    for (let first = start; first < lines.length; first += 1) {
-      if (!lines[first].includes(needles[0])) continue;
-      let cursor = first + 1;
-      let matched = true;
-      for (const needle of needles.slice(1)) {
-        const index = lines.findIndex((line, candidate) => candidate >= cursor && line.includes(needle));
-        if (index === -1) {
-          matched = false;
-          break;
-        }
-        cursor = index + 1;
-      }
-      if (matched) {
-        occurrenceEnd = cursor;
-        break;
-      }
-    }
-    if (occurrenceEnd === undefined) return count;
-    count += 1;
-    start = occurrenceEnd;
+function hasOrderedOccurrence(lines: string[], needles: string[]): boolean {
+  let cursor = 0;
+  for (const needle of needles) {
+    const index = lines.findIndex((line, candidate) => candidate >= cursor && line.includes(needle));
+    if (index === -1) return false;
+    cursor = index + 1;
   }
-  return count;
+  return true;
 }
 
 // Readiness verdict for the pre-submit gate. Distinct from classifySubmission
