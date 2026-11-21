@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { lstat, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, rename, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -74,6 +74,7 @@ test("socket qualification applies only to tmux while the ps probe stays separat
 test("keeps a socket replacement swapped in after the final absence probe", async () => {
   const root = await mkdtemp(join(tmpdir(), "wux-socket-replacement-"));
   const socketPath = join(root, "socket");
+  const replacementPath = join(root, "replacement");
   const original = createServer();
   const replacement = createServer();
   let originalListening = false;
@@ -85,16 +86,15 @@ test("keeps a socket replacement swapped in after the final absence probe", asyn
     await mkdir(root, { recursive: true });
     await listenServer(original, socketPath);
     originalListening = true;
+    await listenServer(replacement, replacementPath);
+    replacementListening = true;
     const originalIdentity = await lstat(socketPath);
     const connection = socketTmuxConnection(socketPath, {
       runner: async (args) => {
         if (args.at(-1) !== "list-sessions") throw new Error(`unexpected tmux call: ${args.join(" ")}`);
         listSessionsCalls += 1;
         if (listSessionsCalls === 2) {
-          await closeServer(original);
-          originalListening = false;
-          await listenServer(replacement, socketPath);
-          replacementListening = true;
+          await rename(replacementPath, socketPath);
           const info = await lstat(socketPath);
           replacementIdentity = { dev: info.dev, ino: info.ino };
         }
@@ -102,15 +102,19 @@ test("keeps a socket replacement swapped in after the final absence probe", asyn
       },
     });
 
-    await removeCreatedSocket({ path: socketPath, device: originalIdentity.dev, inode: originalIdentity.ino }, connection);
+    await removeCreatedSocket(
+      { path: socketPath, device: originalIdentity.dev, inode: originalIdentity.ino },
+      connection,
+      { beforeQuarantine: async () => { throw new Error("replacement must not reach quarantine"); } },
+    );
 
     expect(listSessionsCalls).toBe(2);
     if (!replacementIdentity) throw new Error("replacement socket was not recorded");
     const finalIdentity = await lstat(socketPath);
     expect({ dev: finalIdentity.dev, ino: finalIdentity.ino }).toEqual(replacementIdentity);
   } finally {
-    if (originalListening) await closeServer(original);
     if (replacementListening) await closeServer(replacement);
+    if (originalListening) await closeServer(original);
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -118,6 +122,7 @@ test("keeps a socket replacement swapped in after the final absence probe", asyn
 test("quarantines a replacement that arrives after socket identity validation", async () => {
   const root = await mkdtemp(join(tmpdir(), "wux-socket-quarantine-"));
   const socketPath = join(root, "socket");
+  const replacementPath = join(root, "replacement");
   const original = createServer();
   const replacement = createServer();
   let originalListening = false;
@@ -129,6 +134,8 @@ test("quarantines a replacement that arrives after socket identity validation", 
     await mkdir(root, { recursive: true });
     await listenServer(original, socketPath);
     originalListening = true;
+    await listenServer(replacement, replacementPath);
+    replacementListening = true;
     const originalIdentity = await lstat(socketPath);
     const connection = socketTmuxConnection(socketPath, {
       runner: async (args) => {
@@ -141,10 +148,7 @@ test("quarantines a replacement that arrives after socket identity validation", 
       connection,
       {
         beforeQuarantine: async () => {
-          await closeServer(original);
-          originalListening = false;
-          await listenServer(replacement, socketPath);
-          replacementListening = true;
+          await rename(replacementPath, socketPath);
           const info = await lstat(socketPath);
           replacementIdentity = { dev: info.dev, ino: info.ino };
           replacementInstalled = true;
@@ -157,8 +161,8 @@ test("quarantines a replacement that arrives after socket identity validation", 
     const finalIdentity = await lstat(socketPath);
     expect({ dev: finalIdentity.dev, ino: finalIdentity.ino }).toEqual(replacementIdentity);
   } finally {
-    if (originalListening) await closeServer(original);
     if (replacementListening) await closeServer(replacement);
+    if (originalListening) await closeServer(original);
     await rm(root, { recursive: true, force: true });
   }
 });
