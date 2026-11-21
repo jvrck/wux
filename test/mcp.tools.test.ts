@@ -1,6 +1,8 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { constants } from "node:fs";
+import { access } from "node:fs/promises";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { sendCommand } from "../src/commands/send";
 import { interruptCommand } from "../src/commands/interrupt";
@@ -12,8 +14,9 @@ import type { ResolvedTarget } from "../src/mcp/target";
 import type { SendResult } from "../src/commands/send";
 import { lastInput } from "../src/runtime/events";
 import type { WuxConfig } from "../src/runtime/config";
+import { loadRun } from "../src/runtime/runs";
 import { renderShellCommand } from "../src/runtime/shell";
-import { hasSession } from "../src/runtime/tmux";
+import { connectionForMeta, hasSession, runTmux, tmuxSessionName } from "../src/runtime/tmux";
 import { sshForwardArgs, sshRawHostForwardArgs } from "../src/transport/ssh";
 import { hasTmux, killTmux, tempState } from "./helpers";
 
@@ -23,6 +26,39 @@ function emptyConfig(): WuxConfig {
 
 function uniqueRunName(prefix: string): string {
   return `${prefix}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+async function shellForDashInterruptTest(): Promise<string> {
+  try {
+    await access("/bin/dash", constants.X_OK);
+    return "/bin/dash";
+  } catch {
+    return "/bin/sh";
+  }
+}
+
+async function waitForPaneCommand(name: string, expected: string): Promise<void> {
+  const meta = await loadRun(name);
+  const connection = connectionForMeta(meta);
+  const deadline = Date.now() + 2_000;
+  let current = "";
+  do {
+    const result = await runTmux(connection, [
+      "display-message",
+      "-p",
+      "-t",
+      `=${meta.tmuxSession}:`,
+      "-F",
+      "#{pane_current_command}",
+    ]);
+    if (result.code !== 0) {
+      throw new Error(`failed to observe foreground command for ${name}: ${result.stderr || result.stdout}`.trim());
+    }
+    current = result.stdout.trim();
+    if (current === expected) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  } while (Date.now() < deadline);
+  throw new Error(`timed out waiting for ${expected} to become foreground for ${name}; saw ${current || "no command"}`);
 }
 
 interface Harness {
@@ -158,22 +194,23 @@ describe("mcp tools — by stamping (unit, real run)", () => {
     const old = process.env.XDG_STATE_HOME;
     process.env.XDG_STATE_HOME = temp.stateHome;
     const name = uniqueRunName("stamp");
+    const shell = await shellForDashInterruptTest();
     let created = false;
     try {
-      await runCommand({ backend: "shell", name, cwd: temp.root, env: { SHELL: "/bin/dash" } });
+      await runCommand({ backend: "shell", name, cwd: temp.root, env: { SHELL: shell } });
       created = true;
 
-      // Keep dash in a foreground command until the named interrupt arrives.
+      // Keep the shell in a foreground command until the named interrupt arrives.
       await sendCommand({ name, text: "sleep 30", forceOwner: false, actor: "mcp:probe-x" });
       let input = await lastInput(name);
       expect(input.lastInputBy).toBe("mcp:probe-x");
 
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await waitForPaneCommand(name, "sleep");
 
       await interruptCommand({ name, forceOwner: false, actor: "mcp:probe-y" });
       input = await lastInput(name);
       expect(input.lastInputBy).toBe("mcp:probe-y");
-      expect(await hasSession(`wux_${name}`)).toBe(true);
+      expect(await hasSession(tmuxSessionName(name))).toBe(true);
 
       // No actor -> default owner "user@host" (not an mcp: id).
       await sendCommand({ name, text: "echo b", forceOwner: false });
@@ -184,9 +221,9 @@ describe("mcp tools — by stamping (unit, real run)", () => {
       await stopCommand(name, true, "mcp:probe-z");
       input = await lastInput(name);
       expect(input.lastInputBy).toBe("mcp:probe-z");
-      created = false; // stopped session already killed
-      await killTmux(name); // keep the test-owned tmux server alive for suite teardown
     } finally {
+      // After stop removes the final run session, killTmux ensures the test-owned
+      // keepalive server exists so the suite's private-server teardown has a live target.
       if (created) await killTmux(name);
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();
