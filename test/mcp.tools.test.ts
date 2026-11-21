@@ -1,6 +1,8 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { constants } from "node:fs";
+import { access } from "node:fs/promises";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { sendCommand } from "../src/commands/send";
 import { interruptCommand } from "../src/commands/interrupt";
@@ -12,7 +14,9 @@ import type { ResolvedTarget } from "../src/mcp/target";
 import type { SendResult } from "../src/commands/send";
 import { lastInput } from "../src/runtime/events";
 import type { WuxConfig } from "../src/runtime/config";
+import { loadRun } from "../src/runtime/runs";
 import { renderShellCommand } from "../src/runtime/shell";
+import { connectionForMeta, hasSession, runTmux, type TmuxConnection } from "../src/runtime/tmux";
 import { sshForwardArgs, sshRawHostForwardArgs } from "../src/transport/ssh";
 import { hasTmux, killTmux, tempState } from "./helpers";
 
@@ -22,6 +26,48 @@ function emptyConfig(): WuxConfig {
 
 function uniqueRunName(prefix: string): string {
   return `${prefix}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+const DASH_PATH = "/bin/dash";
+
+async function isExecutable(path: string): Promise<boolean> {
+  try {
+    await access(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const dashAvailable = await isExecutable(DASH_PATH);
+const dashInterruptTest = dashAvailable ? test : test.skip;
+const dashSkipReason = dashAvailable ? "" : ` (skipped: ${DASH_PATH} is not executable)`;
+
+async function waitForPaneCommand(
+  connection: TmuxConnection,
+  tmuxSession: string,
+  name: string,
+  expected: string,
+): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  let current = "";
+  do {
+    const result = await runTmux(connection, [
+      "display-message",
+      "-p",
+      "-t",
+      `=${tmuxSession}:`,
+      "-F",
+      "#{pane_current_command}",
+    ]);
+    if (result.code !== 0) {
+      throw new Error(`failed to observe foreground command for ${name}: ${result.stderr || result.stdout}`.trim());
+    }
+    current = result.stdout.trim();
+    if (current === expected) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  } while (Date.now() < deadline);
+  throw new Error(`timed out waiting for ${expected} to become foreground for ${name}; saw ${current || "no command"}`);
 }
 
 interface Harness {
@@ -151,7 +197,7 @@ describe("mcp tools — send payload shaping (unit)", () => {
 });
 
 describe("mcp tools — by stamping (unit, real run)", () => {
-  test("sendCommand({actor}) writes by:actor; CLI default stays the owner", async () => {
+  dashInterruptTest(`sendCommand({actor}) writes by:actor; CLI default stays the owner${dashSkipReason}`, async () => {
     if (!(await hasTmux())) return;
     const temp = await tempState();
     const old = process.env.XDG_STATE_HOME;
@@ -159,16 +205,23 @@ describe("mcp tools — by stamping (unit, real run)", () => {
     const name = uniqueRunName("stamp");
     let created = false;
     try {
-      await runCommand({ backend: "shell", name, cwd: temp.root });
+      await runCommand({ backend: "shell", name, cwd: temp.root, env: { SHELL: DASH_PATH } });
       created = true;
+      const meta = await loadRun(name);
+      const connection = connectionForMeta(meta);
 
-      await sendCommand({ name, text: "echo a", forceOwner: false, actor: "mcp:probe-x" });
+      // Keep the shell in a foreground command until the named interrupt arrives.
+      await sendCommand({ name, text: "sleep 30", forceOwner: false, actor: "mcp:probe-x" });
       let input = await lastInput(name);
       expect(input.lastInputBy).toBe("mcp:probe-x");
+
+      await waitForPaneCommand(connection, meta.tmuxSession, name, "sleep");
 
       await interruptCommand({ name, forceOwner: false, actor: "mcp:probe-y" });
       input = await lastInput(name);
       expect(input.lastInputBy).toBe("mcp:probe-y");
+      await waitForPaneCommand(connection, meta.tmuxSession, name, "dash");
+      expect(await hasSession(meta.tmuxSession, connection)).toBe(true);
 
       // No actor -> default owner "user@host" (not an mcp: id).
       await sendCommand({ name, text: "echo b", forceOwner: false });
@@ -179,8 +232,9 @@ describe("mcp tools — by stamping (unit, real run)", () => {
       await stopCommand(name, true, "mcp:probe-z");
       input = await lastInput(name);
       expect(input.lastInputBy).toBe("mcp:probe-z");
-      created = false; // stopped session already killed
     } finally {
+      // Remove any surviving run session and keep the test-private tmux server
+      // alive for the suite teardown's final server cleanup.
       if (created) await killTmux(name);
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();
