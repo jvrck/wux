@@ -250,6 +250,8 @@ export async function createSession(options: {
   startupGatePath?: string;
   env?: NodeJS.ProcessEnv;
   connection?: TmuxConnection;
+  // Lets runCommand retain launch evidence if setup fails after new-session.
+  onSessionCreated?: () => void;
   // Backward-compatible test injection; production callers pass `connection`.
   runner?: TmuxRunner;
 }): Promise<void> {
@@ -322,6 +324,7 @@ export async function createSession(options: {
           ...launchCommand,
         ]);
         sessionCreated = result.code === 0;
+        if (sessionCreated) options.onSessionCreated?.();
         return result;
       } finally {
         // Restore inside the lock so the operator's global is back to baseline
@@ -344,19 +347,20 @@ export async function createSession(options: {
   }
 
   try {
-    // Pin the generous scrollback at session scope (outlives the global restore,
-    // visible to show-options, and inherited by later panes/windows).
-    await setSessionOption(options.session, "history-limit", WUX_HISTORY_LIMIT, connection);
+    // Keep a launch-gated pane inspectable if later per-session setup is slow or
+    // fails. This is session-scoped and is cleared by runCommand after launch.
     if (options.startupGatePath) {
       await setSessionOption(options.session, "remain-on-exit", "on", connection);
     }
+    // Pin the generous scrollback at session scope (outlives the global restore,
+    // visible to show-options, and inherited by later panes/windows).
+    await setSessionOption(options.session, "history-limit", WUX_HISTORY_LIMIT, connection);
     // Mouse is contentious (it changes native click-drag selection), so it is
     // strictly opt-in and applied only at session scope — never globally and
     // never to the operator's ~/.tmux.conf.
     if (env[WUX_TMUX_MOUSE_ENV] === "1") {
       await setSessionOption(options.session, "mouse", "on", connection);
     }
-
     const pipe = await runTmux(connection, [
       "pipe-pane",
       "-o",
@@ -367,7 +371,9 @@ export async function createSession(options: {
     if (pipe.code !== 0) {
       throw new WuxError(`failed to start pane logging: ${pipe.stderr || pipe.stdout}`.trim());
     }
+
   } catch (error) {
+    if (sessionCreated && options.onSessionCreated) throw error;
     try {
       await killSession(options.session, connection);
     } catch (rollbackError) {

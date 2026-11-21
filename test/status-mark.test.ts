@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { markCommand } from "../src/commands/mark";
-import { formatStatusRows, statusJsonCommand, statusRows } from "../src/commands/status";
+import { deriveStatus, formatStatusRows, statusJsonCommand, statusRows } from "../src/commands/status";
 import { runCommand } from "../src/commands/run";
 import { listRunMetadata, listRuns, loadRun } from "../src/runtime/runs";
 import { hasTmux, killTmux, tempState } from "./helpers";
@@ -83,6 +83,20 @@ describe("status and mark", () => {
 
   test("rejects invalid mark statuses before loading state", async () => {
     await expect(markCommand("any-run", "paused" as never)).rejects.toThrow("invalid status");
+  });
+
+  test("reports a live failed record as running", () => {
+    const run = {
+      name: "failed-live",
+      backend: "shell",
+      tmuxSession: "wux_failed-live",
+      cwd: "/tmp",
+      owner: "owner",
+      createdAt: "2026-11-21T00:00:00.000Z",
+      status: "failed",
+    } as const;
+    expect(deriveStatus(run, true)).toBe("running");
+    expect(deriveStatus(run, false)).toBe("failed");
   });
 
   test("status json preserves legacy command while absent liveness has derivedStatus unknown", async () => {

@@ -112,7 +112,7 @@ Commands:
   stop       Stop a run.
   interrupt  Interrupt a run's current turn (sends C-c).
   handoff    Send a handoff prompt and read the result.
-  prune      Remove old stopped run state.
+  prune      Remove old stopped or failed run state.
   upgrade    Update wux to the latest GitHub release.
   remotes    Manage named SSH worker targets.
   mcp        Run the stdio MCP control surface (no daemon, no port).
@@ -941,7 +941,7 @@ function parseDurationMsOption(value: string | undefined, flag: string): number 
 // m, h, or d suffixes (a bare number is milliseconds). This is a superset of
 // `parseDurationMsOption` (which `wux wait` uses, ms/s only): prune adds m/h/d
 // for coarse age cutoffs. Unlike `parseDurationMsOption` this also allows 0,
-// which is prune's explicit "select every stopped run regardless of age" value.
+// which is prune's explicit "select every stopped or failed run regardless of age" value.
 const AGE_UNIT_MS: Record<string, number> = {
   ms: 1,
   s: 1_000,

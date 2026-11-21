@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { shellCommand } from "../src/backends/shell";
 import { backendCommand } from "../src/backends";
+import { pruneRuns } from "../src/commands/prune";
 import { runCommand } from "../src/commands/run";
+import { withLock } from "../src/runtime/lock";
 import { runProcess } from "../src/runtime/process";
 import { loadRun, validateRunName } from "../src/runtime/runs";
 import { runDir, runsRoot, stateRoot } from "../src/runtime/state";
@@ -70,6 +72,195 @@ describe("shell run lifecycle", () => {
     }
   });
 
+  test("keeps an immediate shell launch failure with its pane exit and output", async () => {
+    if (!(await hasTmux())) return;
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("shell-launch-failure");
+    const dir = join(temp.stateHome, "wux", "runs", name);
+
+    try {
+      await expect(
+        runCommand({
+          backend: "shell",
+          name,
+          cwd: temp.root,
+          env: { SHELL: "/bin/sh" },
+          backendArgs: ["-c", "echo boom; exit 3"],
+        }),
+      ).rejects.toThrow(/pane exited \(status 3\):[\s\S]*boom/);
+
+      expect((await loadRun(name)).status).toBe("failed");
+      const events = await readFile(join(dir, "events.jsonl"), "utf8");
+      expect(events).toContain('"type":"launch-error"');
+      expect(events).toContain('"exitStatus":"3"');
+
+      await expect(runCommand({ backend: "shell", name, cwd: temp.root })).rejects.toThrow(`run already exists: ${name}`);
+      const pruned = await pruneRuns({ olderThanMs: 0, dryRun: false });
+      expect(pruned.entries).toContainEqual({ name, action: "pruned" });
+      await expect(stat(dir)).rejects.toThrow();
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("finalizes a proven zero launch exit as stopped", async () => {
+    if (!(await hasTmux())) return;
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("shell-launch-zero");
+    const dir = join(temp.stateHome, "wux", "runs", name);
+
+    try {
+      await expect(
+        runCommand({ backend: "shell", name, cwd: temp.root, env: { SHELL: "/bin/sh" }, backendArgs: ["-c", "true"] }),
+      ).resolves.toMatchObject({ name });
+
+      expect((await loadRun(name)).status).toBe("stopped");
+      expect(await hasSession(`wux_${name}`)).toBe(false);
+      const events = await readFile(join(dir, "events.jsonl"), "utf8");
+      expect(events).toContain('"exitStatus":"0"');
+      expect(events).not.toContain('"type":"launch-error"');
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("retains a startup gate timeout with its cause before the backend runs", async () => {
+    if (!(await hasTmux())) return;
+    const realTmux = Bun.which("tmux");
+    if (!realTmux) return;
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("shell-gate-timeout");
+    const dir = join(temp.stateHome, "wux", "runs", name);
+    const bin = join(temp.root, "bin");
+    const fakeTmux = join(bin, "tmux");
+    const fakeSleep = join(bin, "sleep");
+    const backendMarker = join(temp.root, "backend-ran");
+    const env = {
+      ...process.env,
+      XDG_STATE_HOME: temp.stateHome,
+      TMUX_TMPDIR: join(temp.root, "tmux"),
+      WUX_REAL_TMUX: realTmux,
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      SHELL: "/bin/sh",
+      TMUX: "",
+    } as NodeJS.ProcessEnv;
+
+    try {
+      await mkdir(bin, { recursive: true });
+      await writeFile(
+        fakeTmux,
+        "#!/bin/sh\nseen_target=\nfor arg in \"$@\"; do\n  [ \"$arg\" = -t ] && seen_target=1\n  [ \"$seen_target\" = 1 ] && [ \"$arg\" = history-limit ] && /bin/sleep 3\ndone\nexec \"$WUX_REAL_TMUX\" \"$@\"\n",
+        "utf8",
+      );
+      await writeFile(fakeSleep, "#!/bin/sh\nexit 0\n", "utf8");
+      await chmod(fakeTmux, 0o755);
+      await chmod(fakeSleep, 0o755);
+
+      await expect(
+        runCommand({
+          backend: "shell",
+          name,
+          cwd: temp.root,
+          env,
+          backendArgs: ["-c", `: > ${JSON.stringify(backendMarker)}`],
+        }),
+      ).rejects.toThrow(/startup gate timed out.*status 75/s);
+
+      await expect(stat(backendMarker)).rejects.toThrow();
+      expect((await loadRun(name)).status).toBe("failed");
+      const events = await readFile(join(dir, "events.jsonl"), "utf8");
+      expect(events).toContain('"type":"launch-error"');
+      expect(events).toContain('"cause":"startup-gate-timeout"');
+      expect(events).toContain('"exitStatus":"75"');
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  }, 10_000);
+
+  test("leaves its isolated tmux socket untouched after an immediate shell launch failure", async () => {
+    if (!(await hasTmux())) return;
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("shell-launch-socket");
+    const socketParent = join(temp.root, "isolated-tmux");
+    const env = { ...process.env, XDG_STATE_HOME: temp.stateHome, TMUX_TMPDIR: socketParent, SHELL: "/bin/sh" } as NodeJS.ProcessEnv;
+    env.TMUX = "";
+
+    try {
+      await mkdir(socketParent, { recursive: true });
+      await expect(
+        runCommand({ backend: "shell", name, cwd: temp.root, env, backendArgs: ["-c", "echo boom; exit 3"] }),
+      ).rejects.toThrow(/pane exited \(status 3\):[\s\S]*boom/);
+
+      const socketPath = (await loadRun(name)).tmuxSocketPath;
+      expect(typeof socketPath).toBe("string");
+      if (typeof socketPath !== "string") throw new Error("failed launch did not retain its tmux socket path");
+      expect((await stat(socketPath)).isSocket()).toBe(true);
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
+  test("keeps an operator socket that appears while launch waits on the Wux lock", async () => {
+    if (!(await hasTmux())) return;
+    const temp = await tempState();
+    const old = process.env.XDG_STATE_HOME;
+    process.env.XDG_STATE_HOME = temp.stateHome;
+    const name = uniqueRunName("shell-launch-race");
+    const operator = uniqueRunName("operator-race");
+    const socketParent = join(temp.root, "isolated-tmux");
+    const env = {
+      ...process.env,
+      XDG_STATE_HOME: temp.stateHome,
+      TMUX_TMPDIR: socketParent,
+      TMUX: "",
+      SHELL: "/bin/sh",
+    } as NodeJS.ProcessEnv;
+    const dir = join(temp.stateHome, "wux", "runs", name);
+    let socketPath: string | undefined;
+    let socketIdentity: { dev: number; ino: number } | undefined;
+
+    try {
+      await mkdir(socketParent, { recursive: true });
+      let launch: Promise<unknown> | undefined;
+      await withLock(join(temp.stateHome, "wux", "global-history-limit.lock"), async () => {
+        launch = runCommand({ backend: "shell", name, cwd: temp.root, env, backendArgs: ["-c", "echo boom; exit 3"] });
+        await waitForPath(dir);
+        const monitor = [
+          `until tmux has-session -t =wux_${name} 2>/dev/null; do sleep 0.005; done`,
+          `while [ "$(tmux display-message -p -t =wux_${name}: -F '#{pane_dead}' 2>/dev/null)" != 1 ]; do sleep 0.005; done`,
+        ].join("; ");
+        expect((await runProcess(["tmux", "new-session", "-d", "-s", operator, "/bin/sh", "-c", monitor], { env })).code).toBe(0);
+        const socket = await runProcess(["tmux", "display-message", "-p", "-t", `=${operator}:`, "-F", "#{socket_path}"], { env });
+        expect(socket.code).toBe(0);
+        socketPath = socket.stdout.trim();
+        const info = await lstat(socketPath);
+        socketIdentity = { dev: info.dev, ino: info.ino };
+      });
+
+      if (!launch) throw new Error("launch was not started");
+      await expect(launch).rejects.toThrow(/pane exited \(status 3\):[\s\S]*boom/);
+      await waitForTmuxSessionAbsence(operator, env);
+      if (!socketPath || !socketIdentity) throw new Error("operator socket was not recorded");
+      const finalSocket = await lstat(socketPath);
+      expect({ dev: finalSocket.dev, ino: finalSocket.ino }).toEqual(socketIdentity);
+    } finally {
+      process.env.XDG_STATE_HOME = old;
+      await temp.cleanup();
+    }
+  });
+
   test("uses RunOptions.env for creation and socket discovery", async () => {
     if (!(await hasTmux())) return;
     const temp = await tempState();
@@ -106,7 +297,7 @@ describe("shell run lifecycle", () => {
     }
   });
 
-  test("rolls back through the creating connection when socket discovery fails", async () => {
+  test("retains failed state when socket discovery fails after session creation", async () => {
     if (!(await hasTmux())) return;
     const realTmux = Bun.which("tmux");
     if (!realTmux) return;
@@ -142,7 +333,8 @@ describe("shell run lifecycle", () => {
 
       await expect(runCommand({ backend: "shell", name, cwd: temp.root, env })).rejects.toThrow("failed to discover tmux socket");
 
-      await expect(stat(join(temp.stateHome, "wux", "runs", name))).rejects.toThrow();
+      expect((await loadRun(name)).status).toBe("failed");
+      await stat(join(temp.stateHome, "wux", "runs", name));
       expect((await runProcess([realTmux, "has-session", "-t", `=wux_${name}`], { env })).code).not.toBe(0);
       expect((await runProcess([realTmux, "has-session", "-t", `=${decoy}`], { env })).code).toBe(0);
       const calls = await readFile(callLog, "utf8");
@@ -300,3 +492,26 @@ describe("shell run lifecycle", () => {
     expect(result.stderr.length).toBeGreaterThan(0);
   });
 });
+
+async function waitForPath(path: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      await stat(path);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+async function waitForTmuxSessionAbsence(session: string, env: NodeJS.ProcessEnv, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if ((await runProcess(["tmux", "has-session", "-t", `=${session}`], { env })).code !== 0) return;
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for tmux session ${session} to exit`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}

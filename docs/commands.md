@@ -100,7 +100,7 @@ wux run grok   --name grok-smoke   --cwd "$PWD" -- --no-auto-update
 wux run shell  --name smoke-json   --cwd "$PWD" --json
 ```
 
-A run creates a tmux session, metadata, an append-only pane log, and a JSONL event stream under `$XDG_STATE_HOME/wux/runs/<run-name>/` (or `~/.local/state/wux/runs/<run-name>/`). Internal tmux session names use `wux_<run-name>` because tmux treats `:` as target syntax. New metadata also records tmux's exact creating socket path before the create event is committed. If that authoritative discovery fails, Wux kills only the just-created exact session through the creating connection and removes the partial run state. Later Wux operations use the stored path automatically, so runs created through distinct tmux servers remain reachable without recreating the launch environment. Older metadata with no socket field retains the prior ambient-server behavior; a present empty, relative, or non-string socket value is invalid metadata and never becomes ambient fallback.
+A run creates a tmux session, metadata, an append-only pane log, and a JSONL event stream under `$XDG_STATE_HOME/wux/runs/<run-name>/` (or `~/.local/state/wux/runs/<run-name>/`). Internal tmux session names use `wux_<run-name>` because tmux treats `:` as target syntax. New metadata also records tmux's exact creating socket path before the create event is committed. If that authoritative discovery fails after the session exists, Wux retains the failed run evidence and kills only the just-created exact session through the creating connection. Later Wux operations use the stored path automatically, so runs created through distinct tmux servers remain reachable without recreating the launch environment. Older metadata with no socket field retains the prior ambient-server behavior; a present empty, relative, or non-string socket value is invalid metadata and never becomes ambient fallback.
 
 For an intentionally isolated tmux server, point `TMUX_TMPDIR` at a private parent directory when creating the run; no extra Wux flag is needed:
 
@@ -114,6 +114,19 @@ env -u TMUX -u TMUX_TMPDIR wux read isolated
 All four backends share the same lifecycle, metadata, logging, send/read, attach, stop, and handoff mechanics. `shell` uses `$SHELL`; `claude`, `codex`, and `grok` must be available on `PATH`, and their login/approval prompts remain visible through `read` and `attach`. Arguments after `--` are preserved verbatim after wux-managed arguments; wux does not merge or rewrite backend configuration.
 
 `--json` prints the creation envelope `{name, tmuxSession, backend}`.
+
+After opening a new pane, `run` makes one bounded 25 ms launch observation; it
+does not watch, retry, or relaunch a worker. A non-zero or unknown pane exit in
+that window reports the proven exit status and a sanitized output tail. Its run
+directory is retained with `status: "failed"` and a `launch-error` event for
+inspection; the same name cannot be reused until the retained run is explicitly
+pruned. If the startup gate expires before the backend starts, the retained
+launch error names that timeout and includes the available pane status and tail.
+A proven zero exit in that window is retained and finalized as
+`status: "stopped"` with its exit status in the create event, and `run` succeeds.
+An exit later than this one-shot window follows normal lifecycle behavior. Wux
+never removes, renames, or links tmux sockets. A stale socket left by a crashed
+Wux-created server may remain; that cleanup is tracked separately.
 
 ## Send
 
@@ -434,19 +447,19 @@ repo-local helper script is not placed by the installer.
 wux prune --days 30 --dry-run
 wux prune --days 30
 wux prune --older-than 7d --dry-run
-wux prune --older-than 0s --dry-run   # name every stopped run; delete nothing
+wux prune --older-than 0s --dry-run   # name every stopped or failed run; delete nothing
 wux prune --prefix batch- --reconcile --older-than 0 --dry-run
 ```
 
-`prune` scans run state under `$XDG_STATE_HOME/wux/runs` or `~/.local/state/wux/runs`, skips active metadata and live tmux sessions, and removes only stopped run directories older than the cutoff. `--prefix` narrows that scan to run names beginning with the supplied plain-text prefix. `--dry-run` names each candidate directory without deleting it and never lists a running run as a candidate. With `--reconcile`, dry-run prints `would reconcile and prune <name>` when one pass would perform both steps, or `would reconcile <name>` when the age cutoff would keep it. `--reconcile` explicitly finalizes active records only when their tmux session is definitively absent; unavailable servers are never reconciled. The default retention is 30 days. Prune is explicit only; normal commands never auto-delete logs, and logs are not compressed.
+`prune` scans run state under `$XDG_STATE_HOME/wux/runs` or `~/.local/state/wux/runs`, skips active metadata and live tmux sessions, and removes only stopped or failed run directories older than the cutoff. `--prefix` narrows that scan to run names beginning with the supplied plain-text prefix. `--dry-run` names each candidate directory without deleting it and never lists a running run as a candidate. With `--reconcile`, dry-run prints `would reconcile and prune <name>` when one pass would perform both steps, or `would reconcile <name>` when the age cutoff would keep it. `--reconcile` explicitly finalizes active records only when their tmux session is definitively absent; unavailable servers are never reconciled. The default retention is 30 days. Prune is explicit only; normal commands never auto-delete logs, and logs are not compressed.
 
 ### Age selection
 
-The age cutoff has exact, exclusive semantics: a stopped run is a candidate when its **latest retention timestamp** (the max of `stoppedAt` and the `meta.json`/`pane.log`/`events.jsonl` mtimes) is **strictly older** than `now` minus the cutoff — i.e. it was "stopped more than `<cutoff>` ago". A run exactly at the boundary is kept, not pruned.
+The age cutoff has exact, exclusive semantics: a stopped or failed run is a candidate when its **latest retention timestamp** (the max of `stoppedAt` and the `meta.json`/`pane.log`/`events.jsonl` mtimes) is **strictly older** than `now` minus the cutoff. A run exactly at the boundary is kept, not pruned.
 
 - `--older-than <duration>` accepts `ms`, `s`, `m`, `h`, or `d` suffixes; a bare number is milliseconds. For example `--older-than 30s`, `--older-than 10m`, `--older-than 2h`, `--older-than 7d`. (This is a superset of [`wux wait`](#wait)'s `ms`/`s`-only durations — `--older-than` adds `m`/`h`/`d` so a coarse age cutoff like `7d` reads naturally.)
 - `--days <n>` is the day-granularity alias and is exactly equivalent to `--older-than <n>d`. Supply one of `--older-than` / `--days`, not both. `--days` keeps its long-standing positive-integer contract.
-- `--older-than 0` (or `0s`) is the explicit **"select every stopped run regardless of age"** path, intended for cleaning up just-created disposable runs. It ignores the retention timestamp entirely, so a seconds-old (or even timestamp-less) stopped run is selected. Combined with `--dry-run` it names every stopped run and deletes nothing — the safe way for an operator (or agent) to assert exactly which directories a prune would remove. There is no default-aggressive behavior: `0` must be passed explicitly.
+- `--older-than 0` (or `0s`) is the explicit **"select every stopped or failed run regardless of age"** path, intended for cleaning up just-created disposable runs. It ignores the retention timestamp entirely, so a seconds-old (or even timestamp-less) stopped or failed run is selected. Combined with `--dry-run` it names every stopped or failed run and deletes nothing — the safe way for an operator (or agent) to assert exactly which directories a prune would remove. There is no default-aggressive behavior: `0` must be passed explicitly.
 
 Running runs and runs with an active status (`running`, `waiting`, `blocked`) are never candidates at any cutoff, including `--older-than 0`, unless `--reconcile` proves the session is definitively gone.
 

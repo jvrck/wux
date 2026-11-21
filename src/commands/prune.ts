@@ -64,9 +64,9 @@ export async function pruneRuns(options: PruneOptions): Promise<PruneResult> {
     throw error;
   }
 
-  // `selectAll` (age 0) ignores the retention timestamp; otherwise a stopped run
-  // is a candidate only when its latest retention timestamp is strictly older
-  // than this cutoff ("stopped more than <age> ago").
+  // `selectAll` (age 0) ignores the retention timestamp; otherwise a stopped or
+  // failed run is a candidate only when its latest retention timestamp is
+  // strictly older than this cutoff.
   const selectAll = ageMs === 0;
   const cutoffMs = (options.now ?? new Date()).getTime() - ageMs;
   const result = emptyResult(options.reconcile === true);
@@ -199,11 +199,11 @@ async function decideRun(
     return { name, action: "skipped", reason: `active status ${meta.status ?? "unknown"}` };
   }
 
-  if (meta.status !== "stopped") {
+  if (meta.status !== "stopped" && meta.status !== "failed") {
     return { name, action: "skipped", reason: `unsupported status ${meta.status}` };
   }
 
-  // Age 0 selects every stopped run regardless of (or even absent) a timestamp.
+  // Age 0 selects every stopped or failed run regardless of (or even absent) a timestamp.
   const timestampMs = await latestTimestampMs(dir, meta);
   if (selectAll) return { name, action: "pruned" };
   if (timestampMs === undefined) return { name, action: "skipped", reason: "no retention timestamp" };

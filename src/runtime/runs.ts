@@ -7,8 +7,8 @@ import { runDir, runsRoot } from "./state";
 import { connectionForMeta, probeSession, tmuxSessionName, unavailableTmuxMessage } from "./tmux";
 
 export type RunBackend = "shell" | "claude" | "codex" | "grok";
-export type RunStatus = "running" | "waiting" | "blocked" | "stopped";
-export type MarkStatus = RunStatus;
+export type RunStatus = "running" | "waiting" | "blocked" | "stopped" | "failed";
+export type MarkStatus = Exclude<RunStatus, "failed">;
 
 export interface RunMeta {
   name: string;
@@ -151,7 +151,7 @@ function isRunMeta(value: unknown): value is RunMeta {
     typeof meta.owner !== "string" ||
     typeof meta.createdAt !== "string" ||
     !["shell", "claude", "codex", "grok"].includes(meta.backend as string) ||
-    (meta.status !== undefined && !["running", "waiting", "blocked", "stopped"].includes(meta.status as string))
+    (meta.status !== undefined && !["running", "waiting", "blocked", "stopped", "failed"].includes(meta.status as string))
   ) return false;
   return (meta.command === undefined || isStringArray(meta.command)) && (meta.backendArgs === undefined || isStringArray(meta.backendArgs));
 }
