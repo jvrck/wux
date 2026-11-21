@@ -115,6 +115,60 @@ test("keeps a socket replacement swapped in after the final absence probe", asyn
   }
 });
 
+test("quarantines a replacement that arrives after socket identity validation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "wux-socket-quarantine-"));
+  const socketPath = join(root, "socket");
+  const original = createServer();
+  const replacement = createServer();
+  let originalListening = false;
+  let replacementListening = false;
+  let replacementIdentity: { dev: number; ino: number } | undefined;
+  let replacementInstalled = false;
+
+  try {
+    await mkdir(root, { recursive: true });
+    await listenServer(original, socketPath);
+    originalListening = true;
+    const originalIdentity = await lstat(socketPath);
+    const connection = socketTmuxConnection(socketPath, {
+      runner: async (args) => {
+        if (args.at(-1) !== "list-sessions") throw new Error(`unexpected tmux call: ${args.join(" ")}`);
+        return { code: 1, stdout: "", stderr: "no server running on socket" };
+      },
+    });
+    const removeWithHook = removeCreatedSocket as unknown as (
+      created: { path: string; device: number; inode: number },
+      target: ReturnType<typeof socketTmuxConnection>,
+      hooks: { beforeQuarantine: () => Promise<void> },
+    ) => Promise<void>;
+
+    await removeWithHook(
+      { path: socketPath, device: originalIdentity.dev, inode: originalIdentity.ino },
+      connection,
+      {
+        beforeQuarantine: async () => {
+          await closeServer(original);
+          originalListening = false;
+          await listenServer(replacement, socketPath);
+          replacementListening = true;
+          const info = await lstat(socketPath);
+          replacementIdentity = { dev: info.dev, ino: info.ino };
+          replacementInstalled = true;
+        },
+      },
+    );
+
+    expect(replacementInstalled).toBe(true);
+    if (!replacementIdentity) throw new Error("replacement socket was not recorded");
+    const finalIdentity = await lstat(socketPath);
+    expect({ dev: finalIdentity.dev, ino: finalIdentity.ino }).toEqual(replacementIdentity);
+  } finally {
+    if (originalListening) await closeServer(original);
+    if (replacementListening) await closeServer(replacement);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 async function listenServer(server: Server, path: string): Promise<void> {
   await new Promise<void>((resolve, reject) => server.listen(path, (error?: Error) => (error ? reject(error) : resolve())));
 }
