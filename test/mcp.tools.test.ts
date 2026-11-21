@@ -13,6 +13,7 @@ import type { SendResult } from "../src/commands/send";
 import { lastInput } from "../src/runtime/events";
 import type { WuxConfig } from "../src/runtime/config";
 import { renderShellCommand } from "../src/runtime/shell";
+import { hasSession } from "../src/runtime/tmux";
 import { sshForwardArgs, sshRawHostForwardArgs } from "../src/transport/ssh";
 import { hasTmux, killTmux, tempState } from "./helpers";
 
@@ -159,16 +160,20 @@ describe("mcp tools — by stamping (unit, real run)", () => {
     const name = uniqueRunName("stamp");
     let created = false;
     try {
-      await runCommand({ backend: "shell", name, cwd: temp.root });
+      await runCommand({ backend: "shell", name, cwd: temp.root, env: { SHELL: "/bin/dash" } });
       created = true;
 
+      // On Linux dash, this short command can finish before the interrupt lands.
       await sendCommand({ name, text: "echo a", forceOwner: false, actor: "mcp:probe-x" });
       let input = await lastInput(name);
       expect(input.lastInputBy).toBe("mcp:probe-x");
 
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
       await interruptCommand({ name, forceOwner: false, actor: "mcp:probe-y" });
       input = await lastInput(name);
       expect(input.lastInputBy).toBe("mcp:probe-y");
+      expect(await hasSession(`wux_${name}`)).toBe(true);
 
       // No actor -> default owner "user@host" (not an mcp: id).
       await sendCommand({ name, text: "echo b", forceOwner: false });
@@ -180,6 +185,7 @@ describe("mcp tools — by stamping (unit, real run)", () => {
       input = await lastInput(name);
       expect(input.lastInputBy).toBe("mcp:probe-z");
       created = false; // stopped session already killed
+      await killTmux(name); // keep the test-owned tmux server alive for suite teardown
     } finally {
       if (created) await killTmux(name);
       process.env.XDG_STATE_HOME = old;
