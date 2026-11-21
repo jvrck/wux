@@ -100,7 +100,7 @@ wux run grok   --name grok-smoke   --cwd "$PWD" -- --no-auto-update
 wux run shell  --name smoke-json   --cwd "$PWD" --json
 ```
 
-A run creates a tmux session, metadata, an append-only pane log, and a JSONL event stream under `$XDG_STATE_HOME/wux/runs/<run-name>/` (or `~/.local/state/wux/runs/<run-name>/`). Internal tmux session names use `wux_<run-name>` because tmux treats `:` as target syntax. New metadata also records tmux's exact creating socket path before the create event is committed. If that authoritative discovery fails, Wux kills only the just-created exact session through the creating connection and removes the partial run state. Later Wux operations use the stored path automatically, so runs created through distinct tmux servers remain reachable without recreating the launch environment. Older metadata with no socket field retains the prior ambient-server behavior; a present empty, relative, or non-string socket value is invalid metadata and never becomes ambient fallback.
+A run creates a tmux session, metadata, an append-only pane log, and a JSONL event stream under `$XDG_STATE_HOME/wux/runs/<run-name>/` (or `~/.local/state/wux/runs/<run-name>/`). Internal tmux session names use `wux_<run-name>` because tmux treats `:` as target syntax. New metadata also records tmux's exact creating socket path before the create event is committed. If that authoritative discovery fails after the session exists, Wux retains the failed run evidence and kills only the just-created exact session through the creating connection. Later Wux operations use the stored path automatically, so runs created through distinct tmux servers remain reachable without recreating the launch environment. Older metadata with no socket field retains the prior ambient-server behavior; a present empty, relative, or non-string socket value is invalid metadata and never becomes ambient fallback.
 
 For an intentionally isolated tmux server, point `TMUX_TMPDIR` at a private parent directory when creating the run; no extra Wux flag is needed:
 
@@ -120,11 +120,13 @@ does not watch, retry, or relaunch a worker. A non-zero or unknown pane exit in
 that window reports the proven exit status and a sanitized output tail. Its run
 directory is retained with `status: "failed"` and a `launch-error` event for
 inspection; the same name cannot be reused until the retained run is explicitly
-pruned. A proven zero exit in that window is retained and finalized as
+pruned. If the startup gate expires before the backend starts, the retained
+launch error names that timeout and includes the available pane status and tail.
+A proven zero exit in that window is retained and finalized as
 `status: "stopped"` with its exit status in the create event, and `run` succeeds.
 An exit later than this one-shot window follows normal lifecycle behavior. Wux
-only removes a socket after proving it created that exact server, never an
-unrelated tmux server.
+never removes, renames, or links tmux sockets. A stale socket left by a crashed
+Wux-created server may remain; that cleanup is tracked separately.
 
 ## Send
 

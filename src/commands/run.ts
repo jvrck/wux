@@ -8,15 +8,12 @@ import { createRunMeta, saveRun, type RunBackend } from "../runtime/runs";
 import { runDir, runsRoot } from "../runtime/state";
 import {
   ambientTmuxConnection,
-  ambientSocketPath,
   createSession,
   discoverSocketPath,
   hasSession,
   killSession,
   paneDeadStatus,
   probeSession,
-  recordCreatedSocket,
-  removeCreatedSocket,
   setRemainOnExit,
   socketTmuxConnection,
   unavailableTmuxMessage,
@@ -61,7 +58,6 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
   // command sees the same TMUX/TMUX_TMPDIR selection as new-session.
   const tmuxEnv = options.env ? { ...process.env, ...options.env } : undefined;
   const connection = ambientTmuxConnection({ env: tmuxEnv });
-  const expectedAmbientSocketPath = await ambientSocketPath(tmuxEnv);
   if (await hasSession(meta.tmuxSession, connection)) {
     throw new WuxError(`tmux session already exists: ${meta.tmuxSession}`);
   }
@@ -98,12 +94,13 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
       startupGatePath,
       env: tmuxEnv,
       connection,
+      onSessionCreated: () => {
+        sessionCreated = true;
+      },
     });
-    sessionCreated = true;
     const tmuxSocketPath = await discoverSocketPath(meta.tmuxSession, connection);
     await saveRun({ ...meta, tmuxSocketPath });
     const startupConnection = socketTmuxConnection(tmuxSocketPath, { executable: connection.executable, env: tmuxEnv });
-    const createdSocket = await recordCreatedSocket(meta.tmuxSession, tmuxSocketPath, expectedAmbientSocketPath, startupConnection);
     await writeFile(startupGatePath, "ready\n", "utf8");
     if (observeClaudeStartup) {
       // Startup observation must follow the exact server that created this run.
@@ -228,7 +225,6 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
           }
         }
       }
-      await removeCreatedSocket(createdSocket, startupConnection);
       const stoppedAt = new Date().toISOString();
       await saveRun({ ...meta, tmuxSocketPath, status: "stopped", stoppedAt, updatedAt: stoppedAt });
       await appendEvent(meta.name, {
@@ -244,6 +240,7 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
 
     async function reportLaunchFailure(exitStatus: string): Promise<never> {
       const paneTail = await paneLogTail(paneLog, STARTUP_PANE_TAIL_LINES);
+      const startupGateTimedOut = (await exists(`${startupGatePath}.timed-out`)) || paneTail.includes(STARTUP_GATE_TIMEOUT);
       const probe = await probeSession(meta.tmuxSession, startupConnection);
       if (probe.state === "unavailable") {
         throw new WuxError(unavailableTmuxMessage(startupConnection, probe.detail));
@@ -259,7 +256,6 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
           }
         }
       }
-      await removeCreatedSocket(createdSocket, startupConnection);
       const failedAt = new Date().toISOString();
       await saveRun({ ...meta, tmuxSocketPath, status: "failed", updatedAt: failedAt });
       await appendEvent(meta.name, {
@@ -268,12 +264,49 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
         owner: meta.owner,
         exitStatus,
         paneTail,
+        cause: startupGateTimedOut ? "startup-gate-timeout" : "pane-exit",
       });
       launchFailureReported = true;
+      if (startupGateTimedOut) {
+        throw new WuxError(`startup gate timed out before backend launch (status ${exitStatus}): ${paneTail || "(no pane output captured)"}`);
+      }
       throw new WuxError(`pane exited (status ${exitStatus}): ${paneTail || "(no pane output captured)"}`);
     }
   } catch (error) {
     if (startupExitReported || startupObservationUnavailable || launchFailureReported) throw error;
+    if (sessionCreated) {
+      // new-session succeeded, so retain launch evidence even if a later setup
+      // operation failed before the creating socket could be persisted.
+      const paneLog = join(dir, "pane.log");
+      const startupGatePath = join(dir, "startup-ready");
+      const paneTail = await paneLogTail(paneLog, STARTUP_PANE_TAIL_LINES);
+      const startupGateTimedOut = (await exists(`${startupGatePath}.timed-out`)) || paneTail.includes(STARTUP_GATE_TIMEOUT);
+      const pane = await paneDeadStatus(meta.tmuxSession, connection);
+      const exitStatus = pane.state === "dead" ? pane.exitStatus : "unknown";
+      const probe = await probeSession(meta.tmuxSession, connection);
+      if (probe.state === "live") {
+        try {
+          await killSession(meta.tmuxSession, connection);
+        } catch {
+          // Retention must not replace the original setup error with cleanup noise.
+        }
+      }
+      const failedAt = new Date().toISOString();
+      await saveRun({ ...meta, status: "failed", updatedAt: failedAt });
+      await appendEvent(meta.name, {
+        type: "launch-error",
+        backend: meta.backend,
+        owner: meta.owner,
+        cause: startupGateTimedOut ? "startup-gate-timeout" : "setup-error",
+        setupError: errorMessage(error),
+        exitStatus,
+        paneTail,
+      });
+      if (startupGateTimedOut) {
+        throw new WuxError(`startup gate timed out before backend launch (status ${exitStatus}): ${paneTail || "(no pane output captured)"}`);
+      }
+      throw error;
+    }
     const rollbackErrors: unknown[] = [];
     if (sessionCreated) {
       try {

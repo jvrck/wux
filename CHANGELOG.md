@@ -12,9 +12,11 @@ intentionally not reproduced here.
 
 ### Fixed
 
-- Preserved non-zero immediate launch failures with their pane exit status and
-  output, retained evidence, and explicit failed-run pruning; a proven zero
-  launch exit is finalized as stopped.
+- Preserved non-zero immediate launch and startup-gate timeout failures with
+  their cause, pane status/output when available, retained evidence, and
+  explicit failed-run pruning; a proven zero launch exit is finalized as stopped.
+- Wux never removes, renames, or links tmux sockets; a stale socket left by a
+  crashed Wux-created server may remain while follow-up cleanup is considered.
 
 ## 2026.11.17
 

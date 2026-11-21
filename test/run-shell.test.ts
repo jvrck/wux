@@ -172,20 +172,21 @@ describe("shell run lifecycle", () => {
           env,
           backendArgs: ["-c", `: > ${JSON.stringify(backendMarker)}`],
         }),
-      ).rejects.toThrow(/startup gate timed out/);
+      ).rejects.toThrow(/startup gate timed out.*status 75/s);
 
       await expect(stat(backendMarker)).rejects.toThrow();
       expect((await loadRun(name)).status).toBe("failed");
       const events = await readFile(join(dir, "events.jsonl"), "utf8");
       expect(events).toContain('"type":"launch-error"');
       expect(events).toContain('"cause":"startup-gate-timeout"');
+      expect(events).toContain('"exitStatus":"75"');
     } finally {
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();
     }
   }, 10_000);
 
-  test("removes its isolated tmux socket after an immediate shell launch failure", async () => {
+  test("leaves its isolated tmux socket untouched after an immediate shell launch failure", async () => {
     if (!(await hasTmux())) return;
     const temp = await tempState();
     const old = process.env.XDG_STATE_HOME;
@@ -204,7 +205,7 @@ describe("shell run lifecycle", () => {
       const socketPath = (await loadRun(name)).tmuxSocketPath;
       expect(typeof socketPath).toBe("string");
       if (typeof socketPath !== "string") throw new Error("failed launch did not retain its tmux socket path");
-      await expect(stat(socketPath)).rejects.toThrow();
+      expect((await stat(socketPath)).isSocket()).toBe(true);
     } finally {
       process.env.XDG_STATE_HOME = old;
       await temp.cleanup();
@@ -296,7 +297,7 @@ describe("shell run lifecycle", () => {
     }
   });
 
-  test("rolls back through the creating connection when socket discovery fails", async () => {
+  test("retains failed state when socket discovery fails after session creation", async () => {
     if (!(await hasTmux())) return;
     const realTmux = Bun.which("tmux");
     if (!realTmux) return;
@@ -332,7 +333,8 @@ describe("shell run lifecycle", () => {
 
       await expect(runCommand({ backend: "shell", name, cwd: temp.root, env })).rejects.toThrow("failed to discover tmux socket");
 
-      await expect(stat(join(temp.stateHome, "wux", "runs", name))).rejects.toThrow();
+      expect((await loadRun(name)).status).toBe("failed");
+      await stat(join(temp.stateHome, "wux", "runs", name));
       expect((await runProcess([realTmux, "has-session", "-t", `=wux_${name}`], { env })).code).not.toBe(0);
       expect((await runProcess([realTmux, "has-session", "-t", `=${decoy}`], { env })).code).toBe(0);
       const calls = await readFile(callLog, "utf8");

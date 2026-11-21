@@ -1,6 +1,5 @@
-import { link, lstat, mkdir, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { mkdir, stat, writeFile } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
 import { WuxError } from "./errors";
 import { withLock } from "./lock";
 import { processCommandName, runInteractiveProcess, runProcess, type ProcessResult } from "./process";
@@ -36,36 +35,6 @@ export interface TmuxSessionProbe {
 // and optional exact socket placement. Callers supply tmux subcommands only.
 export function ambientTmuxConnection(options: TmuxConnectionOptions = {}): TmuxConnection {
   return makeTmuxConnection(undefined, options);
-}
-
-export interface CreatedSocket {
-  path: string;
-  device: number;
-  inode: number;
-}
-
-// The ambient path Wux would ask tmux to use. It is only an expected path; a
-// socket is considered Wux-created later only after `recordCreatedSocket` has
-// positively proved first-session ownership on this exact path.
-export async function ambientSocketPath(env: NodeJS.ProcessEnv = process.env): Promise<string | undefined> {
-  const currentSocket = env.TMUX?.match(/^(.*),\d+,\d+$/)?.[1];
-  if (currentSocket) return canonicalSocketPath(currentSocket);
-  const uid = process.getuid?.();
-  if (uid === undefined) return undefined;
-  const socketRoot = env.TMUX_TMPDIR || "/tmp";
-  try {
-    return join(await realpath(socketRoot), `tmux-${uid}`, "default");
-  } catch {
-    return join(socketRoot, `tmux-${uid}`, "default");
-  }
-}
-
-async function canonicalSocketPath(socketPath: string): Promise<string> {
-  try {
-    return join(await realpath(dirname(socketPath)), basename(socketPath));
-  } catch {
-    return socketPath;
-  }
 }
 
 export function socketTmuxConnection(socketPath: string, options: TmuxConnectionOptions = {}): TmuxConnection {
@@ -205,30 +174,6 @@ export async function discoverSocketPath(session: string, connection: TmuxConnec
   return socketPath;
 }
 
-// Prove ownership at server creation rather than inferring it from an earlier
-// filesystem observation. tmux assigns its first-ever session `$0`; if another
-// server won the launch race, this run receives a later id and no cleanup right
-// is granted. A sessionless operator server can also yield `$0`, so later
-// server-absence checks still gate cleanup. The recorded device/inode prevents
-// an operator's replacement socket from being unlinked later.
-export async function recordCreatedSocket(
-  session: string,
-  socketPath: string,
-  expectedAmbientSocketPath: string | undefined,
-  connection: TmuxConnection,
-): Promise<CreatedSocket | undefined> {
-  if (expectedAmbientSocketPath !== socketPath || connection.socketPath !== socketPath) return undefined;
-  const sessionId = await runTmux(connection, ["display-message", "-p", "-t", exactPaneTarget(session), "-F", "#{session_id}"]);
-  if (sessionId.code !== 0 || sessionId.stdout.trim() !== "$0") return undefined;
-  try {
-    const info = await lstat(socketPath);
-    if (!info.isSocket()) return undefined;
-    return { path: socketPath, device: info.dev, inode: info.ino };
-  } catch {
-    return undefined;
-  }
-}
-
 function exactTarget(session: string): string {
   return `=${session}`;
 }
@@ -305,6 +250,8 @@ export async function createSession(options: {
   startupGatePath?: string;
   env?: NodeJS.ProcessEnv;
   connection?: TmuxConnection;
+  // Lets runCommand retain launch evidence if setup fails after new-session.
+  onSessionCreated?: () => void;
   // Backward-compatible test injection; production callers pass `connection`.
   runner?: TmuxRunner;
 }): Promise<void> {
@@ -377,6 +324,7 @@ export async function createSession(options: {
           ...launchCommand,
         ]);
         sessionCreated = result.code === 0;
+        if (sessionCreated) options.onSessionCreated?.();
         return result;
       } finally {
         // Restore inside the lock so the operator's global is back to baseline
@@ -399,19 +347,20 @@ export async function createSession(options: {
   }
 
   try {
-    // Pin the generous scrollback at session scope (outlives the global restore,
-    // visible to show-options, and inherited by later panes/windows).
-    await setSessionOption(options.session, "history-limit", WUX_HISTORY_LIMIT, connection);
+    // Keep a launch-gated pane inspectable if later per-session setup is slow or
+    // fails. This is session-scoped and is cleared by runCommand after launch.
     if (options.startupGatePath) {
       await setSessionOption(options.session, "remain-on-exit", "on", connection);
     }
+    // Pin the generous scrollback at session scope (outlives the global restore,
+    // visible to show-options, and inherited by later panes/windows).
+    await setSessionOption(options.session, "history-limit", WUX_HISTORY_LIMIT, connection);
     // Mouse is contentious (it changes native click-drag selection), so it is
     // strictly opt-in and applied only at session scope — never globally and
     // never to the operator's ~/.tmux.conf.
     if (env[WUX_TMUX_MOUSE_ENV] === "1") {
       await setSessionOption(options.session, "mouse", "on", connection);
     }
-
     const pipe = await runTmux(connection, [
       "pipe-pane",
       "-o",
@@ -422,7 +371,9 @@ export async function createSession(options: {
     if (pipe.code !== 0) {
       throw new WuxError(`failed to start pane logging: ${pipe.stderr || pipe.stdout}`.trim());
     }
+
   } catch (error) {
+    if (sessionCreated && options.onSessionCreated) throw error;
     try {
       await killSession(options.session, connection);
     } catch (rollbackError) {
@@ -444,72 +395,6 @@ export async function killSession(session: string, connection: TmuxConnection = 
   const result = await runTmux(connection, ["kill-session", "-t", exactTarget(session)]);
   if (result.code !== 0) {
     throw new WuxError(`failed to stop ${session}: ${result.stderr || result.stdout}`.trim());
-  }
-}
-
-export interface RemoveCreatedSocketOptions {
-  // Test seam for the post-validation replacement race. Production callers omit it.
-  beforeQuarantine?: () => Promise<void>;
-}
-
-// tmux can leave a Wux-created socket file behind after its last session exits.
-// Re-check that the server is gone and that the original socket inode still
-// occupies the path immediately before unlinking; otherwise leave it alone.
-export async function removeCreatedSocket(
-  createdSocket: CreatedSocket | undefined,
-  connection: TmuxConnection,
-  options: RemoveCreatedSocketOptions = {},
-): Promise<void> {
-  if (!createdSocket || connection.socketPath !== createdSocket.path) return;
-  const sessions = await runTmux(connection, ["list-sessions"]);
-  if (sessions.code === 0) return;
-  const detail = (sessions.stderr || sessions.stdout).trim();
-  if (!isDefinitivelyAbsentTmuxDetail(detail)) return;
-  try {
-    const info = await lstat(createdSocket.path);
-    if (!socketMatchesCreated(info, createdSocket)) return;
-    const finalSessions = await runTmux(connection, ["list-sessions"]);
-    if (finalSessions.code === 0 || !isDefinitivelyAbsentTmuxDetail((finalSessions.stderr || finalSessions.stdout).trim())) return;
-    const finalInfo = await lstat(createdSocket.path);
-    if (!socketMatchesCreated(finalInfo, createdSocket)) return;
-    await options.beforeQuarantine?.();
-
-    // Moving the path first closes the path-based check-then-unlink window: a
-    // replacement that arrives after the final lstat is moved to the quarantine
-    // name, where its identity is checked before any unlink. A replacement that
-    // arrives after the move remains at the original path untouched.
-    const quarantinePath = join(dirname(createdSocket.path), `.${basename(createdSocket.path)}.wux-${process.pid}-${randomUUID()}`);
-    try {
-      await rename(createdSocket.path, quarantinePath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-      throw error;
-    }
-    const quarantined = await lstat(quarantinePath);
-    if (socketMatchesCreated(quarantined, createdSocket)) {
-      await unlink(quarantinePath);
-      return;
-    }
-    await restoreQuarantinedSocket(quarantinePath, createdSocket.path);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw error;
-  }
-}
-
-function socketMatchesCreated(info: Awaited<ReturnType<typeof lstat>>, createdSocket: CreatedSocket): boolean {
-  return info.isSocket() && info.dev === createdSocket.device && info.ino === createdSocket.inode;
-}
-
-async function restoreQuarantinedSocket(quarantinePath: string, socketPath: string): Promise<void> {
-  try {
-    // link fails rather than overwriting if another process has already claimed
-    // socketPath. On filesystems that reject socket hard links, leave the
-    // quarantined entry intact rather than risk deleting an operator's socket.
-    await link(quarantinePath, socketPath);
-    await unlink(quarantinePath);
-  } catch {
-    process.stderr.write(`wux: preserved replacement tmux socket at ${quarantinePath}\n`);
   }
 }
 
