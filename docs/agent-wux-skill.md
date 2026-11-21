@@ -168,7 +168,7 @@ text), and modal recovery, follow the **Operator boot-state guide** in
 [`docs/agent-readiness.md`](./agent-readiness.md#operator-boot-state-guide).
 Restating its core rule: **gate on `wait` plus ground truth, not the send
 verdict** — `send` only reports whether the keystroke landed
-(`submitted | uncertain | not-submitted`), not whether the turn finished, and it
+(`submitted | uncertain | not-submitted | truncated`), not whether the turn finished, and it
 reliably under-claims while succeeding.
 
 ## Interactive Agent Backends

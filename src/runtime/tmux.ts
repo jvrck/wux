@@ -394,7 +394,7 @@ export async function killSession(session: string, connection: TmuxConnection = 
 
 // Honest-submit verdict. This is a HEURISTIC over the pane, not an end-of-turn
 // signal: it answers "did the prompt submit", not "did the turn finish".
-export type Submission = "submitted" | "uncertain" | "not-submitted";
+export type Submission = "submitted" | "uncertain" | "not-submitted" | "truncated";
 
 export interface SubmitResult {
   submission: Submission;
@@ -612,15 +612,78 @@ export function classifySubmission(before: string, after: string, text: string, 
   if (anchor.presence === "held") return "not-submitted";
   if (anchor.presence === "partial") return "uncertain";
 
-  const stillPresent = needles.some((needle) => afterClean.includes(needle));
-  if (!stillPresent) return "submitted";
+  const beforeClean = stripAnsi(before);
+  if (beforeClean.trim().length === 0 || beforeClean === afterClean) return "uncertain";
+
+  const transcriptVerdict = classifyTranscriptEvidence(beforeClean, afterClean, needles);
+  if (transcriptVerdict !== undefined) return transcriptVerdict;
+
+  // Claude/Codex no longer promote a merely changed frame to `submitted`.
+  // A collapsed paste can hide every literal line, so no whole-text evidence is
+  // an honest `uncertain` verdict whether or not a composer marker survived.
+  if (isGatedBackend(backend)) return "uncertain";
 
   // Text lingers in the frame but not on a composer line. Without a usable
   // baseline (before-capture failed/empty) we cannot honestly say the frame
   // advanced, so stay uncertain rather than risk a false success.
-  const beforeClean = stripAnsi(before);
-  if (beforeClean.trim().length === 0) return "uncertain";
   return beforeClean !== afterClean ? "submitted" : "uncertain";
+}
+
+// A transcript echo is submission evidence only when a complete ordered
+// occurrence is inside one contiguous region appended after the pre-send frame.
+// A tail without its head is distinct, but its tail must be in that new region:
+// historical text never proves delivery of this send.
+function classifyTranscriptEvidence(beforeClean: string, afterClean: string, needles: string[]): Submission | undefined {
+  const beforeTranscript = transcriptLines(beforeClean);
+  const afterTranscript = transcriptLines(afterClean);
+  const newRegion = appendedTranscriptRegion(beforeTranscript, afterTranscript);
+  if (newRegion === undefined) return undefined;
+  if (hasOrderedOccurrence(newRegion, needles)) return "submitted";
+
+  const head = needles[0];
+  const tail = needles.at(-1)!;
+  if (!newRegion.some((line) => line.includes(head)) && newRegion.some((line) => line.includes(tail))) return "truncated";
+  if (needles.some((needle) => newRegion.some((line) => line.includes(needle)))) return "uncertain";
+  return undefined;
+}
+
+// tmux captures can lose the top of a scrolling pane between samples. The only
+// trustworthy added region begins after the longest preserved tail of `before`
+// that is still the prefix of `after`; without such an anchor, strict callers
+// do not turn old transcript text into a successful send verdict.
+function appendedTranscriptRegion(before: string[], after: string[]): string[] | undefined {
+  if (before.length === 0) return after;
+  const longest = Math.min(before.length, after.length);
+  for (let overlap = longest; overlap > 0; overlap -= 1) {
+    const beforeTail = before.slice(-overlap);
+    if (beforeTail.every((line, index) => line.trimEnd() === after[index].trimEnd())) return after.slice(overlap);
+  }
+  return undefined;
+}
+
+function transcriptLines(frame: string): string[] {
+  const lines = frame.split("\n");
+  let composerIndex = lines.length;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (COMPOSER_LINE_RE.test(lines[index])) {
+      composerIndex = index;
+      break;
+    }
+  }
+  // When the TUI redraw omits its composer marker entirely, the whole captured
+  // frame is the only available transcript evidence. Do not let that omission
+  // revive the old changed-frame success path.
+  return lines.slice(0, composerIndex);
+}
+
+function hasOrderedOccurrence(lines: string[], needles: string[]): boolean {
+  let cursor = 0;
+  for (const needle of needles) {
+    const index = lines.findIndex((line, candidate) => candidate >= cursor && line.includes(needle));
+    if (index === -1) return false;
+    cursor = index + 1;
+  }
+  return true;
 }
 
 // Readiness verdict for the pre-submit gate. Distinct from classifySubmission

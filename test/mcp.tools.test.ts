@@ -139,13 +139,14 @@ describe("mcp tools — send payload shaping (unit)", () => {
   });
 
   test("a not-submitted result surfaces an explicit warning, never a clean success", () => {
-    for (const submission of ["uncertain", "not-submitted"] as const) {
+    for (const submission of ["uncertain", "not-submitted", "truncated"] as const) {
       const result: SendResult = { name: "r", bytes: 3, submission, retried: true };
       const payload = sendPayload(localResolved(), result);
       expect(payload.submission).toBe(submission);
       expect(payload.submitted).toBe(false);
       expect(typeof payload.warning).toBe("string");
       expect(payload.warning as string).toContain(submission);
+      if (submission === "truncated") expect(payload.warning as string).toContain("head was lost");
     }
   });
 });
@@ -231,7 +232,7 @@ describe("mcp tools — full local loop (open → list → send → read → int
       // send (mutation; stamps mcp client id)
       const sent = await call(harness.client, "send", { name, text: "echo wux-loop-marker", target: "local" });
       expect(sent.isError).toBeFalsy();
-      expect(["submitted", "uncertain", "not-submitted"]).toContain(sent.structured.submission as string);
+      expect(["submitted", "uncertain", "not-submitted", "truncated"]).toContain(sent.structured.submission as string);
       // shell backend always classifies submitted.
       expect(sent.structured.submission).toBe("submitted");
       expect(sent.structured.submitted).toBe(true);

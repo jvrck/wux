@@ -1,0 +1,9 @@
+● Earlier assistant output
+
+second sent line
+third sent line
+
+────
+❯ 
+────
+  ⏵⏵ bypass permissions on

@@ -127,6 +127,17 @@ wux send smoke --json "printf 'hello from wux\n'"
 `--json` must appear before the literal text and prints
 `{name, submission, retried, bytes}`.
 
+`submission` is `submitted`, `uncertain`, `not-submitted`, or `truncated`.
+`truncated` means the captured transcript retained the tail of a multi-line
+literal but lost its head. It is a warning, not a clean success; wux does not
+resend it because a second paste could duplicate the visible tail.
+For Claude and Codex, `submitted` requires the complete literal in order in the
+captured transcript and newly present relative to the pre-send frame. A collapsed
+TUI paste placeholder, stale transcript text, or any changed frame without new
+whole-text evidence is `uncertain`; callers should prefer pointing a worker at a
+file for long text. Shell keeps its unconditional fast path and
+unknown backends retain their legacy best-effort changed-frame verdict.
+
 ### Readiness gate (claude/codex)
 
 On a busy Ink TUI a blind Enter is dropped and the typed text **strands** in the
