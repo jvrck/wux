@@ -1,10 +1,15 @@
 import { describe, expect, test } from "bun:test";
+import { lstat, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { createServer, type Server } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ProcessResult } from "../src/runtime/process";
 import {
   connectionForMeta,
   discoverSocketPath,
   paneForegroundActivity,
   probeSession,
+  removeCreatedSocket,
   socketTmuxConnection,
 } from "../src/runtime/tmux";
 
@@ -65,6 +70,58 @@ test("socket qualification applies only to tmux while the ps probe stays separat
   expect(tmuxCalls.every((args) => args[0] === "/opt/tmux/bin/tmux" && args[1] === "-S" && args[2] === "/tmp/wux.socket")).toBe(true);
   expect(processCalls).toEqual([["ps", "-o", "comm=", "-p", "4242"]]);
 });
+
+test("keeps a socket replacement swapped in after the final absence probe", async () => {
+  const root = await mkdtemp(join(tmpdir(), "wux-socket-replacement-"));
+  const socketPath = join(root, "socket");
+  const original = createServer();
+  const replacement = createServer();
+  let originalListening = false;
+  let replacementListening = false;
+  let replacementIdentity: { dev: number; ino: number } | undefined;
+  let listSessionsCalls = 0;
+
+  try {
+    await mkdir(root, { recursive: true });
+    await listenServer(original, socketPath);
+    originalListening = true;
+    const originalIdentity = await lstat(socketPath);
+    const connection = socketTmuxConnection(socketPath, {
+      runner: async (args) => {
+        if (args.at(-1) !== "list-sessions") throw new Error(`unexpected tmux call: ${args.join(" ")}`);
+        listSessionsCalls += 1;
+        if (listSessionsCalls === 2) {
+          await closeServer(original);
+          originalListening = false;
+          await listenServer(replacement, socketPath);
+          replacementListening = true;
+          const info = await lstat(socketPath);
+          replacementIdentity = { dev: info.dev, ino: info.ino };
+        }
+        return { code: 1, stdout: "", stderr: "no server running on socket" };
+      },
+    });
+
+    await removeCreatedSocket({ path: socketPath, device: originalIdentity.dev, inode: originalIdentity.ino }, connection);
+
+    expect(listSessionsCalls).toBe(2);
+    if (!replacementIdentity) throw new Error("replacement socket was not recorded");
+    const finalIdentity = await lstat(socketPath);
+    expect({ dev: finalIdentity.dev, ino: finalIdentity.ino }).toEqual(replacementIdentity);
+  } finally {
+    if (originalListening) await closeServer(original);
+    if (replacementListening) await closeServer(replacement);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+async function listenServer(server: Server, path: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => server.listen(path, (error?: Error) => (error ? reject(error) : resolve())));
+}
+
+async function closeServer(server: Server): Promise<void> {
+  await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+}
 
 // The probe reads pid and current command in two separate `display-message`
 // calls (no in-band separator) so it is robust to tmux escaping non-printable

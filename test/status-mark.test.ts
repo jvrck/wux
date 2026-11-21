@@ -96,6 +96,7 @@ describe("status and mark", () => {
       status: "failed",
     } as const;
     expect(deriveStatus(run, true)).toBe("running");
+    expect(deriveStatus(run, false)).toBe("failed");
   });
 
   test("status json preserves legacy command while absent liveness has derivedStatus unknown", async () => {
