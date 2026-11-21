@@ -163,8 +163,8 @@ describe("mcp tools — by stamping (unit, real run)", () => {
       await runCommand({ backend: "shell", name, cwd: temp.root, env: { SHELL: "/bin/dash" } });
       created = true;
 
-      // On Linux dash, this short command can finish before the interrupt lands.
-      await sendCommand({ name, text: "echo a", forceOwner: false, actor: "mcp:probe-x" });
+      // Keep dash in a foreground command until the named interrupt arrives.
+      await sendCommand({ name, text: "sleep 30", forceOwner: false, actor: "mcp:probe-x" });
       let input = await lastInput(name);
       expect(input.lastInputBy).toBe("mcp:probe-x");
 
