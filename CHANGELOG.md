@@ -10,6 +10,10 @@ intentionally not reproduced here.
 
 ## Unreleased
 
+## 2026.11.17
+
+No breaking changes.
+
 ### Fixed
 
 - Report a head-truncated multi-line interactive paste as `truncated` rather
